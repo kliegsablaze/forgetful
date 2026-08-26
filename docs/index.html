@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forgetful — User Manual</title>
+<meta name="description" content="User manual for Forgetful, a Schwung module for the Ableton Move — reconstructed, interactive screens for every page and control.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌘</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#05070c; --panel:#0a0e1a; --panel2:#0e1424;
+  --ink:#b7c2da; --ink-hi:#d9e2f2; --dim:#5a6584; --dim2:#33395038;
+  --line:rgba(183,194,218,.14); --line2:rgba(183,194,218,.06);
+  --accent:#6ea8e8; --accent-dim:#3c5c85;
+  --fade:#2c3550;
+  --disp:"Space Mono","SFMono-Regular",Consolas,monospace;
+  --body:"Source Serif 4",Georgia,"Times New Roman",serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:17px;line-height:1.68}
+.wrap{max-width:760px;margin:0 auto;padding:0 26px}
+h1,h2,h3{font-family:var(--disp);text-wrap:balance}
+a{color:var(--accent);text-decoration:none;border-bottom:1px solid var(--accent-dim)}
+a:hover{border-bottom-color:var(--accent)}
+a:focus-visible,button:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
+code{font-family:var(--disp);font-size:.85em;color:var(--ink-hi);background:var(--panel2);
+  border:1px solid var(--line);border-radius:3px;padding:.1em .38em}
+b{font-weight:600;color:var(--ink-hi)}
+
+nav{position:sticky;top:0;z-index:40;background:rgba(5,7,12,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;gap:20px;height:46px;overflow-x:auto;scrollbar-width:none}
+nav .wrap::-webkit-scrollbar{display:none}
+nav .logo{font-family:var(--disp);font-weight:700;font-size:13px;letter-spacing:.02em;color:var(--ink-hi);
+  border:none;flex:none}
+nav a.s{font-family:var(--disp);font-size:11px;color:var(--dim);border:none;flex:none}
+nav a.s:hover{color:var(--ink)}
+
+header{padding:64px 0 40px}
+.kicker{font-family:var(--disp);font-size:11px;letter-spacing:.16em;color:var(--dim);text-transform:uppercase;
+  margin-bottom:14px}
+h1.title{font-weight:700;font-size:clamp(38px,6.5vw,58px);color:var(--ink-hi);letter-spacing:-.01em}
+.lede{max-width:520px;margin-top:18px;font-size:19px;color:var(--ink)}
+.lede b{color:var(--accent)}
+.chips{margin-top:22px;font-family:var(--disp);font-size:11.5px;color:var(--dim)}
+.chips b{color:var(--ink)}
+
+section{padding:60px 0 6px;border-top:1px solid var(--line2)}
+section:first-of-type{border-top:0}
+.eyebrow{font-family:var(--disp);font-size:11px;letter-spacing:.14em;color:var(--dim);text-transform:uppercase;
+  margin-bottom:10px}
+h2.sh{font-weight:700;font-size:clamp(24px,3.6vw,32px);color:var(--ink-hi);margin:0 0 16px}
+p+p{margin-top:13px}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:34px}
+@media(max-width:680px){.cols{grid-template-columns:1fr}}
+.note{border-left:2px solid var(--accent-dim);padding:4px 0 4px 16px;margin:20px 0;font-size:15.5px;color:var(--dim)}
+.note b{color:var(--ink)}
+.seq{font-family:var(--disp);font-size:14px;color:var(--dim);letter-spacing:.02em;margin-top:18px}
+.seq b{color:var(--accent)}
+
+/* ---------- reconstructed device screen ----------
+   Sized to match the prose column (.wrap) exactly — no wider, no narrower. */
+.device{margin-top:28px}
+.screen-frame{background:#000;border:1px solid var(--line);border-radius:4px;padding:18px;
+  display:block;box-sizing:border-box;width:100%;max-width:708px}
+.screen{image-rendering:pixelated;image-rendering:crisp-edges;-ms-interpolation-mode:nearest-neighbor;
+  width:100%;aspect-ratio:2/1;display:block;background:#000;
+  animation:breathe 7s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.9}}
+.hitgrid{position:relative;width:100%}
+.hit{position:absolute;background:transparent;border:0;cursor:pointer}
+.hit:hover,.hit:focus-visible{background:rgba(110,168,232,.1)}
+.device-cap{font-family:var(--disp);font-size:10.5px;color:var(--dim);letter-spacing:.06em;margin-top:8px}
+.inspect{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);min-height:56px}
+.inspect .it{font-family:var(--disp);font-size:12px;color:var(--accent);letter-spacing:.04em}
+.inspect .id{font-size:15px;color:var(--ink);margin-top:5px;max-width:560px}
+
+/* ---------- flavor list ---------- */
+.flist{margin-top:22px;border-top:1px solid var(--line)}
+.frow{display:grid;grid-template-columns:110px 1fr;gap:18px;padding:16px 0;border-bottom:1px solid var(--line)}
+@media(max-width:560px){.frow{grid-template-columns:1fr}}
+.frow .fn{font-family:var(--disp);font-weight:700;color:var(--ink-hi);font-size:15px}
+.frow .fk{font-family:var(--disp);font-size:10px;color:var(--dim);margin-top:3px}
+.frow .fd{font-size:15.5px;color:var(--ink)}
+.frow .fd b{color:var(--accent)}
+
+/* ---------- ramp demo (screen-styled) ---------- */
+.rampbox{margin-top:24px}
+.ramp-buttons{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.ramp-buttons button{font-family:var(--disp);font-size:11px;background:var(--panel2);color:var(--ink);
+  border:1px solid var(--line);border-radius:3px;padding:7px 12px;cursor:pointer}
+.ramp-buttons button:hover{border-color:var(--accent)}
+.ramp-buttons button.frz.on{background:var(--accent-dim);border-color:var(--accent);color:var(--ink-hi)}
+.ramp-screen{background:#000;border:1px solid var(--line);border-radius:3px;padding:12px}
+.ramp-track{position:relative;height:14px;background:#000}
+.ramp-track::before{content:"";position:absolute;inset:0;background:
+  repeating-linear-gradient(90deg,transparent 0 7px,var(--dim2) 7px 8px)}
+.ramp-fill{position:absolute;inset:0;width:0%;background:var(--accent)}
+.ramp-target{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--ink-hi)}
+.ramp-cap{display:flex;justify-content:space-between;margin-top:6px;font-family:var(--disp);font-size:10px;color:var(--dim)}
+.ramp-msg{margin-top:14px;font-size:15px;color:var(--ink)}
+.ramp-msg b{color:var(--accent)}
+
+/* ---------- spec ---------- */
+dl.spec{margin-top:20px;border-top:1px solid var(--line)}
+dl.spec div{display:grid;grid-template-columns:200px 1fr;gap:16px;padding:11px 0;border-bottom:1px solid var(--line2)}
+@media(max-width:560px){dl.spec div{grid-template-columns:1fr}}
+dl.spec dt{font-family:var(--disp);font-size:11.5px;color:var(--dim);letter-spacing:.03em}
+dl.spec dd{font-size:15px;color:var(--ink);font-variant-numeric:tabular-nums}
+
+.tscroll{overflow-x:auto;margin:18px 0}
+table{border-collapse:collapse;width:100%;font-size:14.5px;min-width:420px}
+th{font-family:var(--disp);font-size:10.5px;letter-spacing:.06em;color:var(--dim);text-align:left;
+  padding:8px 12px;border-bottom:1px solid var(--line)}
+td{padding:10px 12px;border-bottom:1px solid var(--line2)}
+td:first-child{font-family:var(--disp);color:var(--ink-hi);white-space:nowrap}
+
+footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font-family:var(--disp);
+  font-size:11.5px;color:var(--dim);line-height:1.9}
+
+@media(max-width:640px){header{padding:44px 0 32px}section{padding:44px 0 6px}}
+</style>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <a class="logo" href="#top">FORGETFUL</a>
+  <a class="s" href="#what">What it is</a>
+  <a class="s" href="#main-page">Main page</a>
+  <a class="s" href="#loop-page">Memory page</a>
+  <a class="s" href="#ramps">How knobs move</a>
+  <a class="s" href="#ideas">Ideas</a>
+</div></nav>
+
+<div class="wrap" id="top">
+
+<header>
+  <div class="kicker">Schwung module · Ableton Move · User manual</div>
+  <h1 class="title">Forgetful</h1>
+  <p class="lede">One live input, sent by hand into whichever of four tape
+    memories you choose. The moment you move on, it starts <b>forgetting
+    itself</b> — until it's silent, and ready to hold something new.</p>
+  <p class="chips">forgetful <b>v0.2.0</b> · audio_fx · requires <b>schwung</b></p>
+</header>
+
+<section id="what">
+  <div class="eyebrow">What it is</div>
+  <h2 class="sh">One input, four memories</h2>
+  <div class="cols">
+    <div>
+      <p>Forgetful holds four independent memories, A through D. Each one
+      can record a loop from whatever's feeding into the module, then plays
+      that loop back on its own — fading a little more with every repeat,
+      until it's silent and empty again.</p>
+    </div>
+    <div>
+      <p>The controls are split across two kinds of page: one <b>Main</b>
+      page for choosing which memory is listening right now and mixing all
+      four together, and four <b>memory pages</b> — one each for A, B, C,
+      D — for shaping exactly how that memory falls apart over time.</p>
+      <p class="seq"><b>Send</b> → <b>Rec</b> → <b>plays &amp; ages</b> → <b>silent</b></p>
+    </div>
+  </div>
+</section>
+
+<section id="setup">
+  <div class="eyebrow">Setup</div>
+  <h2 class="sh">Load it into a chain slot</h2>
+  <p>Install via Schwung Manager's Module Store, or from the repo directly:
+  <a href="https://github.com/kliegsablaze/forgetful">github.com/kliegsablaze/forgetful</a>.
+  It's <code>audio_fx</code>, <code>chainable</code> — drop it into any
+  Signal Chain fx slot. No setup, no external files: turn Send to A, press
+  Rec, and it's catching.</p>
+</section>
+
+<!-- ============================ MAIN PAGE ============================ -->
+<section id="main-page">
+  <div class="eyebrow">Screen — page 0</div>
+  <h2 class="sh">The Main page</h2>
+  <p>This is the page you land on. It's where you choose which memory is
+  listening, see all four at a glance, and mix them together. Click a
+  control on the screen below to see it light up; the full walkthrough
+  follows underneath.</p>
+  <div class="device" id="mainDevice"></div>
+
+  <div class="flist">
+    <div class="frow"><div><div class="fn">Send</div></div>
+      <div class="fd">Turn it to A, B, C, or D. Whichever one it's pointed at is the only memory that can hear the live input right now — the other three keep playing, aging, or sitting empty exactly as they were, no matter where Send points.</div></div>
+    <div class="frow"><div><div class="fn">ECHO</div></div>
+      <div class="fd">A read-only glance at all four memories at once, one character per memory in A B C D order: a dash for empty, <b>R</b> while recording, <b>O</b> while overdubbing, <b>F</b> while frozen, or a digit for roughly how much is left before it fades to nothing. <code>7R-1</code> reads as A around 70–79%, B recording, C empty, D around 10–19%.</div></div>
+    <div class="frow"><div><div class="fn">REC</div></div>
+      <div class="fd">One knob, four stages, each press moving to the next: <b>press once</b> from empty to start recording; <b>press again</b> to stop — the memory starts playing back immediately and begins fading; <b>press again while it's playing</b> to start overdubbing — whatever you play now gets layered onto what's already there, without erasing it or resetting how far along it's faded; <b>press once more</b> to stop overdubbing and return to plain playback. The knob always tells you what the next press will do, not what's happening right now.</div></div>
+    <div class="frow"><div><div class="fn">Freeze</div></div>
+      <div class="fd">Pauses that memory's fading completely — it keeps looping exactly as degraded as it already is, for as long as you like. The four flavor knobs on that memory's own page keep working normally while it's frozen, so you can dial in a character and hold it in place. Press again to let it carry on fading from there.</div></div>
+    <div class="frow"><div><div class="fn">The mixer</div></div>
+      <div class="fd">Four more knobs, one per memory, set how loud each one sits in the final mix — independent of Send. D can be turned all the way down while it's still recording, or A can be brought back up after it's mostly faded away.</div></div>
+  </div>
+</section>
+
+<!-- ============================ LOOP PAGE ============================ -->
+<section id="loop-page">
+  <div class="eyebrow">Screen — pages 1–4</div>
+  <h2 class="sh">A memory page</h2>
+  <p>Pages 1 through 4 — one per memory — share this exact layout. This is
+  where you shape how that one memory ages: how it sounds, how long it
+  takes, and how to let it go.</p>
+  <div class="device" id="loopDevice"></div>
+
+  <div class="flist">
+    <div class="frow"><div><div class="fn">Age</div></div>
+      <div class="fd">How long, in seconds, this memory takes to fade to silence once it starts playing back. It also sets the pace for the four flavor knobs below — see <a href="#ramps">how the knobs actually move</a>.</div></div>
+    <div class="frow"><div><div class="fn">Drive</div></div>
+      <div class="fd">Tape warmth and saturation. The one knob on this page that isn't turn-based like the others — it eases toward whatever you set it to continuously, rather than snapping or gliding in stages.</div></div>
+    <div class="frow"><div><div class="fn">ECHO</div></div>
+      <div class="fd">This one memory's own state, as a single character — the same codes as the Main page's ECHO, just for this memory alone.</div></div>
+    <div class="frow"><div><div class="fn">Erase</div></div>
+      <div class="fd">Clears this memory. Empty or recording, it's instant. Playing back, it fades out over <b>10 seconds</b> instead of cutting — even while frozen — and clears once the fade finishes. Press Rec on it again before that happens and it's yours again immediately, mid-fade.</div></div>
+    <div class="frow"><div><div class="fn">Warp</div></div>
+      <div class="fd">Slow, uneven pitch wobble on the read head — a worn tape transport losing its grip.</div></div>
+    <div class="frow"><div><div class="fn">Darken</div></div>
+      <div class="fd">Feeds the memory into a small reverb. Turn it up and the wash gets more present, darker, and longer together — at the top, a wall of reverb, not just a filtered signal.</div></div>
+    <div class="frow"><div><div class="fn">VINYL</div></div>
+      <div class="fd">Click-and-pop surface crackle. The bottom half of the knob only raises how loud it is; past halfway it also starts getting busier.</div></div>
+    <div class="frow"><div><div class="fn">Hiss</div></div>
+      <div class="fd">Brightened, high-passed noise — tape hiss, not static. Kept quiet on purpose: a texture sitting underneath, not a wall of noise.</div></div>
+  </div>
+</section>
+
+<!-- ============================ RAMPS ============================ -->
+<section id="ramps">
+  <div class="eyebrow">How the knobs actually move</div>
+  <h2 class="sh">First touch sets it. Every touch after glides.</h2>
+  <div class="cols">
+    <div>
+      <p>Warp, Darken, Hiss and VINYL don't behave like an ordinary knob.
+      The <b>first</b> time you turn one since a take closed, it jumps
+      straight to what you set.</p>
+      <p><b>Every turn after that</b> glides instead — from wherever it
+      sits now, toward the new value, timed to arrive exactly when the
+      memory itself runs out of time. However much of Age is left, not the
+      full Age setting.</p>
+    </div>
+    <div>
+      <p>Try it: the first click below sets the value cold. Every click
+      after glides. Freeze turns every glide into a short, fixed 150ms
+      window — live, knob-following control, for sculpting a memory's
+      character by hand while its aging is held still.</p>
+    </div>
+  </div>
+  <div class="rampbox">
+    <div class="ramp-buttons">
+      <button data-v="20">Turn → 20%</button>
+      <button data-v="65">Turn → 65%</button>
+      <button data-v="90">Turn → 90%</button>
+      <button data-v="0">Turn → 0%</button>
+      <button class="frz" id="rFreeze">Frozen: off</button>
+    </div>
+    <div class="ramp-screen">
+      <div class="ramp-track"><div class="ramp-fill" id="rFill"></div><div class="ramp-target" id="rTarget" style="left:0%"></div></div>
+      <div class="ramp-cap"><span>0%</span><span id="rApplied">applied 0%</span><span>100%</span></div>
+    </div>
+    <p class="ramp-msg" id="rMsg">Untouched — nothing has been turned yet.</p>
+  </div>
+</section>
+
+<!-- ============================ IDEAS ============================ -->
+<section id="ideas">
+  <div class="eyebrow">Ways to use it</div>
+  <h2 class="sh">What to actually do with it</h2>
+  <p>A few starting points — all of them just combinations of the controls
+  above.</p>
+  <div class="flist">
+    <div class="frow"><div><div class="fn">Build and let go</div></div>
+      <div class="fd">Catch a phrase into A, then send to B and keep playing while A fades quietly underneath. By the time you're done with B, A is barely a memory of itself, sitting low in the mix.</div></div>
+    <div class="frow"><div><div class="fn">Mismatched clocks</div></div>
+      <div class="fd">Set each memory's Age wildly differently — one at 10 seconds, one at the full 300 — so the mix is always somewhere between freshly caught and almost gone, and it never settles into a repeating cycle.</div></div>
+    <div class="frow"><div><div class="fn">Catch and hold</div></div>
+      <div class="fd">Record a chord or a held note, let Darken and Warp work into it for a while, then Freeze right where it sounds best. A strange, stable pad you can play over for as long as you like.</div></div>
+    <div class="frow"><div><div class="fn">One clean, one crumbling</div></div>
+      <div class="fd">Push VINYL and Hiss hard on one memory as a textured bed, and leave another completely untouched. The mix always has one steady voice sitting next to one that's coming apart.</div></div>
+    <div class="frow"><div><div class="fn">Build it in layers</div></div>
+      <div class="fd">Record a beat, let it loop a few times, then overdub a second pass on top instead of starting over. Keep adding without ever losing what was already there.</div></div>
+    <div class="frow"><div><div class="fn">A drift that never repeats</div></div>
+      <div class="fd">Nudge Warp up a little at a time over a long Age setting. The pitch wanders further with every turn, and by the time the memory is gone it barely resembles where it started.</div></div>
+  </div>
+</section>
+
+<footer>
+  FORGETFUL · v0.2.0 · audio_fx · by <a href="https://github.com/kliegsablaze">kliegs</a><br>
+  Built on <a href="https://github.com/charlesvestal/schwung">schwung</a> by Charles Vestal, for the Ableton Move.
+</footer>
+
+</div><!-- /wrap -->
+
+<script>
+"use strict";
+
+/* ============================================================
+   Reconstructed Move display: 128x64, 1-bit.
+   Drawn at logical resolution, then thresholded to solid on/off
+   pixels so it reads like a real monochrome panel rather than an
+   anti-aliased canvas drawing.
+   ============================================================ */
+const SCR_W=128, SCR_H=64;
+const ACCENT=[0x6e,0xa8,0xe8];
+
+/* ------------------------------------------------------------------
+   The display font. Proportional, five rows tall, one blank column
+   between glyphs; each entry is its columns, LSB = top row. Most
+   letters are four columns, M and W are five, I is one, T is three.
+   Read straight off the hardware rather than approximated with a
+   webfont — a 5px webfont glyph is mostly anti-aliasing, and
+   thresholding anti-aliasing to one bit is what turned the first pass
+   of these screens into mush.
+   ------------------------------------------------------------------ */
+const FONT={
+  " ":[0,0],
+  "A":[0x1E,0x05,0x05,0x1E], "B":[0x1F,0x15,0x15,0x0A], "C":[0x0E,0x11,0x11,0x11],
+  "D":[0x1F,0x11,0x11,0x0E], "E":[0x1F,0x15,0x15,0x11], "F":[0x1F,0x05,0x05,0x01],
+  "G":[0x0E,0x11,0x15,0x1D], "H":[0x1F,0x04,0x04,0x1F], "I":[0x1F],
+  "J":[0x08,0x10,0x11,0x0F], "K":[0x1F,0x04,0x0A,0x11], "L":[0x1F,0x10,0x10,0x10],
+  "M":[0x1F,0x02,0x04,0x02,0x1F], "N":[0x1F,0x02,0x04,0x1F], "O":[0x0E,0x11,0x11,0x0E],
+  "P":[0x1F,0x05,0x05,0x02], "Q":[0x0E,0x11,0x11,0x1E], "R":[0x1F,0x05,0x0D,0x12],
+  "S":[0x12,0x15,0x15,0x09], "T":[0x01,0x1F,0x01], "U":[0x0F,0x10,0x10,0x0F],
+  "V":[0x07,0x08,0x10,0x08,0x07], "W":[0x0F,0x10,0x0C,0x10,0x0F], "X":[0x1B,0x04,0x04,0x1B],
+  "Y":[0x01,0x02,0x1C,0x02,0x01], "Z":[0x19,0x15,0x15,0x13],
+  "0":[0x0E,0x11,0x11,0x0E], "1":[0x12,0x1F,0x10], "2":[0x19,0x15,0x15,0x12],
+  "3":[0x11,0x15,0x15,0x0A], "4":[0x07,0x04,0x04,0x1F], "5":[0x17,0x15,0x15,0x09],
+  "6":[0x0E,0x15,0x15,0x09], "7":[0x01,0x19,0x05,0x03], "8":[0x0A,0x15,0x15,0x0A],
+  "9":[0x12,0x15,0x15,0x0E],
+  "-":[0x04,0x04,0x04], ".":[0x10], ":":[0x0A], "!":[0x17], "?":[0x01,0x15,0x05,0x03],
+  "%":[0x19,0x04,0x04,0x13], "/":[0x18,0x04,0x03], "+":[0x04,0x0E,0x04],
+  ">":[0x11,0x0A,0x04], "<":[0x04,0x0A,0x11]
+};
+const CH_H=5;
+function glyph(c){ return FONT[c]||FONT["?"]; }
+function tw(str){
+  str=String(str).toUpperCase(); let n=0;
+  for(let i=0;i<str.length;i++) n+=glyph(str[i]).length+1;
+  return n?n-1:0;
+}
+function text(ctx,str,x,y){
+  str=String(str).toUpperCase(); x=Math.round(x); y=Math.round(y);
+  for(let i=0;i<str.length;i++){
+    const g=glyph(str[i]);
+    for(let c=0;c<g.length;c++){
+      for(let r=0;r<CH_H;r++) if((g[c]>>r)&1) ctx.fillRect(x+c,y+r,1,1);
+    }
+    x+=g.length+1;
+  }
+}
+function textC(ctx,str,cx,y){ text(ctx,str,Math.round(cx-tw(str)/2),y); }
+function textR(ctx,str,rx,y){ text(ctx,str,rx-tw(str),y); }
+
+/* Single pixels, so a one-pixel outline really is one pixel wide after
+   the threshold instead of a two-pixel anti-aliased smear. */
+function px(ctx,x,y){ ctx.fillRect(Math.round(x),Math.round(y),1,1); }
+function run(ctx,x0,x1,y){ ctx.fillRect(Math.round(x0),Math.round(y),Math.round(x1-x0)+1,1); }
+function pxLine(ctx,x0,y0,x1,y1){
+  x0=Math.round(x0); y0=Math.round(y0); x1=Math.round(x1); y1=Math.round(y1);
+  const dx=Math.abs(x1-x0), sx=x0<x1?1:-1, dy=-Math.abs(y1-y0), sy=y0<y1?1:-1;
+  let err=dx+dy;
+  for(;;){
+    px(ctx,x0,y0);
+    if(x0===x1&&y0===y1) break;
+    const e2=2*err;
+    if(e2>=dy){ err+=dy; x0+=sx; }
+    if(e2<=dx){ err+=dx; y0+=sy; }
+  }
+}
+
+const COL_W=32, ROW_Y=[8,31], FOOT_Y=55;
+
+/* A continuous value: a midpoint-circle ring of radius 8 with the
+   bottom 90 degrees left open, and a needle pivoting at its centre.
+   Zero is at the open corner on the left, full at the one on the right. */
+function drawDial(ctx,cx,cy,f){
+  const r=8;
+  let x=r,y=0,err=1-r;
+  const put=(dx,dy)=>{ if(dy<=5) px(ctx,cx+dx,cy+dy); };
+  while(x>=y){
+    put(x,y); put(y,x); put(-y,x); put(-x,y);
+    put(-x,-y); put(-y,-x); put(y,-x); put(x,-y);
+    y++; if(err<0){ err+=2*y+1; } else { x--; err+=2*(y-x)+1; }
+  }
+  const rad=(135+Math.max(0,Math.min(1,f))*270)*Math.PI/180;
+  pxLine(ctx,cx,cy,cx+Math.cos(rad)*7.2,cy+Math.sin(rad)*7.2);
+}
+
+/* A trigger: a cylinder. Two ellipses of the same profile — the top one
+   drawn whole, the bottom one only where it shows below the body —
+   joined by two walls. Touch it and the top fills, with a small burst
+   at the base. */
+const CYL_W=[7,7,6,3];               /* half-width by |dy| */
+function cylRow(ctx,cx,cy,dy,fill){
+  const o=CYL_W[Math.abs(dy)]; if(o===undefined) return;
+  if(fill){ run(ctx,cx-o,cx+o,cy+dy); return; }
+  const nx=CYL_W[Math.abs(dy)+1];
+  const i=nx===undefined?0:Math.min(nx+1,o);
+  run(ctx,cx+i,cx+o,cy+dy); run(ctx,cx-o,cx-i,cy+dy);
+}
+function drawTrigger(ctx,cx,y,selected){
+  const top=y+6, bot=y+12;
+  if(selected){
+    for(let dy=-3;dy<=0;dy++) cylRow(ctx,cx,top,dy,true);
+    ctx.fillRect(cx-7,top+1,15,2);
+    cylRow(ctx,cx,top,3,false);
+  } else {
+    for(let dy=-3;dy<=3;dy++) cylRow(ctx,cx,top,dy,false);
+  }
+  for(let yy=top;yy<=bot;yy++){ px(ctx,cx-7,yy); px(ctx,cx+7,yy); }
+  for(let dy=1;dy<=3;dy++) cylRow(ctx,cx,bot,dy,false);
+  if(selected){
+    px(ctx,cx-8,y+11); px(ctx,cx+8,y+11);
+    px(ctx,cx-9,y+12); px(ctx,cx+9,y+12);
+    px(ctx,cx,y+13);   px(ctx,cx,y+14);
+  }
+}
+
+/* An enum: one bordered box, the same size everywhere, holding either a
+   single centred line or two stacked ones — ECHO's four characters read
+   as two rows of two, one row per pair of memories. */
+function drawBox(ctx,x,y,val){
+  const w=20,h=15, lines=Array.isArray(val)?val:[val];
+  run(ctx,x,x+w-1,y); run(ctx,x,x+w-1,y+h-1);
+  for(let i=0;i<h;i++){ px(ctx,x,y+i); px(ctx,x+w-1,y+i); }
+  const top = lines.length>1 ? y+2 : y+5;
+  lines.forEach((s,i)=>textC(ctx,s,x+w/2-0.5,top+i*6));
+}
+
+function drawDevice(ctx, s){
+  ctx.clearRect(0,0,SCR_W,SCR_H);
+  ctx.fillStyle="#fff";
+
+  /* Rows 0-6 are the title, or — while a knob is touched — an inverted
+     band carrying that knob's full name and its live value. */
+  if(s.touchedLabel){
+    ctx.fillRect(0,0,SCR_W,7);
+    ctx.clearRect(0,0,1,1); ctx.clearRect(SCR_W-1,0,1,1);   /* notched corners */
+    ctx.save(); ctx.globalCompositeOperation="destination-out";
+    text(ctx,s.touchedLabel,2,1);
+    textR(ctx,s.touchedValue,126,1);
+    ctx.restore();
+  } else {
+    textR(ctx,s.title,126,1);
+  }
+
+  /* Rows 7-8 are the page bar: one segment per page, the current one
+     two pixels deep instead of one. */
+  const n=Math.max(1,s.pageCount||1);
+  ctx.fillRect(0,7,SCR_W,1);
+  for(let i=1;i<n;i++){ ctx.clearRect(Math.round(i*SCR_W/n)-1,7,1,1); }
+  const a=Math.round((s.pageIndex||0)*SCR_W/n), b=Math.round(((s.pageIndex||0)+1)*SCR_W/n)-2;
+  ctx.fillRect(a,8,b-a+1,1);
+
+  s.cells.forEach((cell,i)=>{
+    const x=(i%4)*COL_W, y=ROW_Y[i<4?0:1], sel=i===s.touchedIndex;
+    if(cell.kind==="dial")         drawDial(ctx,x+15,y+10,cell.value.f);
+    else if(cell.kind==="trigger") drawTrigger(ctx,x+16,y,sel);
+    else                           drawBox(ctx,x+6,y+2,cell.value);
+
+    if(sel){                       /* the touched knob wears four marks */
+      px(ctx,x+8,y+1); px(ctx,x+24,y+1);
+      run(ctx,x+3,x+5,y+6); run(ctx,x+27,x+29,y+6);
+    }
+    const label=sel?(cell.label||""):(cell.label||"").slice(0,5);
+    if(sel){
+      ctx.fillRect(x,y+17,COL_W,7);
+      ctx.save(); ctx.globalCompositeOperation="destination-out";
+      textC(ctx,label,x+15.5,y+18);
+      ctx.restore();
+    } else {
+      textC(ctx,label,x+15.5,y+18);
+    }
+  });
+
+  /* Footer: a full-width rule, then alternating pill / plain hints. The
+     last one reads FIRE rather than MENU while a trigger is touched,
+     because that is what a jog-click would then do. */
+  ctx.fillRect(0,FOOT_Y,SCR_W,1);
+  const hints=[["JOG",1],["PAGE",0],["CLK",1],[s.touchedIsTrigger?"FIRE":"MENU",0]];
+  let hx=1;
+  hints.forEach(([label,pill])=>{
+    const w=tw(label);
+    if(pill){
+      ctx.fillRect(hx,FOOT_Y+1,w+4,7);
+      ctx.save(); ctx.globalCompositeOperation="destination-out";
+      text(ctx,label,hx+2,FOOT_Y+2);
+      ctx.restore();
+      hx+=w+6;
+    } else {
+      text(ctx,label,hx,FOOT_Y+2);
+      hx+=w+4;
+    }
+  });
+
+  threshold(ctx);
+}
+
+function threshold(ctx){
+  const img=ctx.getImageData(0,0,SCR_W,SCR_H), d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    if(d[i+3]>128){ d[i]=ACCENT[0]; d[i+1]=ACCENT[1]; d[i+2]=ACCENT[2]; d[i+3]=255; }
+    else { d[i+3]=0; }
+  }
+  ctx.putImageData(img,0,0);
+}
+
+/* Builds one interactive device screen inside `mount`.
+   cell.kind: "dial" (values are {t,f} — display text + 0..1 fraction),
+   "box" / "box2" (enum — values are a string, or a pair joined into one),
+   "trigger" (values are the header text it cycles through; the resting
+   cell never shows them, only a fixed glyph — exactly like the real
+   device never shows a trigger's live value except in the touched header). */
+function buildDevice(mount, page){
+  mount.innerHTML =
+    '<div class="screen-frame"><div class="hitgrid">'+
+      '<canvas class="screen" width="'+SCR_W+'" height="'+SCR_H+'"></canvas>'+
+    '</div></div>'+
+    '<div class="device-cap">Click a control to see what it does</div>'+
+    '<div class="inspect"><div class="it" id="'+page.id+'-it">— tap a control —</div><div class="id" id="'+page.id+'-id">'+page.hint+'</div></div>';
+
+  const canvas=mount.querySelector("canvas"), ctx=canvas.getContext("2d");
+  const hitgrid=mount.querySelector(".hitgrid");
+  const itEl=document.getElementById(page.id+"-it"), idEl=document.getElementById(page.id+"-id");
+
+  function headerValue(cell,v){
+    if(cell.kind==="dial") return v.t;
+    if(cell.kind==="box2") return v.join("");
+    return v; /* box or trigger */
+  }
+
+  page.cells.forEach((cell,i)=>{
+    const col=i%4, row=i<4?0:1;
+    const b=document.createElement("button");
+    b.className="hit"; b.type="button";
+    b.style.left=(col*25)+"%"; b.style.width="25%";
+    b.style.top=(row===0?"12.5%":"48.4%"); b.style.height="34.4%";
+    b.setAttribute("aria-label",cell.label+" — knob "+(i+1));
+    b.onclick=()=>{
+      cell.idx=(cell.idx+1)%cell.values.length;
+      const v=cell.values[cell.idx];
+      itEl.textContent=cell.label+" — knob "+(i+1);
+      idEl.textContent=cell.desc(v);
+      render({touched:i});
+    };
+    hitgrid.appendChild(b);
+  });
+
+  function render(opts){
+    const ti = opts && typeof opts.touched==="number" ? opts.touched : -1;
+    const tc = ti>=0 ? page.cells[ti] : null;
+    drawDevice(ctx,{
+      title:page.title,
+      pageIndex:page.pageIndex||0, pageCount:page.pageCount||2,
+      touchedIndex: ti,
+      touchedLabel: tc && tc.label.toUpperCase(),
+      touchedValue: tc && headerValue(tc, tc.values[tc.idx]),
+      touchedIsTrigger: !!(tc && tc.kind==="trigger"),
+      cells: page.cells.map(c=>({label:c.label,kind:c.kind,value:c.values[c.idx]}))
+    });
+  }
+  render();
+}
+
+/* ---------------- Main page ---------------- */
+buildDevice(document.getElementById("mainDevice"),{
+  id:"main", title:"Main", pageIndex:0, pageCount:2,
+  hint:"Send, ECHO, REC and Freeze sit on the top row; the four memory volumes underneath.",
+  cells:[
+    {label:"Send",kind:"box",idx:0,values:["A","B","C","D"],
+      desc:v=>"Send — knob 1. Points the live input at memory "+v+". Only "+v+" can hear it right now."},
+    {label:"ECHO",kind:"box2",idx:0,values:[["--","--"],["7R","--"],["7R","-1"],["FR","-1"]],
+      desc:v=>"ECHO — knob 2, read-only. One character per memory, A B C D in order: "+v.join("")+" here."},
+    {label:"REC",kind:"trigger",idx:0,values:["REC","STOP","DUB","PLAY"],
+      desc:v=>"REC — knob 3. Names what the next press does. Reads "+v+" right now."},
+    {label:"Freeze",kind:"trigger",idx:0,values:["FREEZE","AGING"],
+      desc:v=>"Freeze — knob 4. "+(v==="FREEZE"?"Next press freezes the routed memory.":"Next press resumes its aging.")},
+    {label:"A",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.8},{t:"100%",f:1}],
+      desc:v=>"A — knob 5. Memory A's volume in the mix, "+v.t+". Defaults to 80%."},
+    {label:"B",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.8},{t:"45%",f:.45}],
+      desc:v=>"B — knob 6. Memory B's volume in the mix, "+v.t+"."},
+    {label:"C",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.8},{t:"60%",f:.6}],
+      desc:v=>"C — knob 7. Memory C's volume in the mix, "+v.t+"."},
+    {label:"D",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.8},{t:"20%",f:.2}],
+      desc:v=>"D — knob 8. Memory D's volume in the mix, "+v.t+"."},
+  ]
+});
+
+/* ---------------- Loop page ---------------- */
+buildDevice(document.getElementById("loopDevice"),{
+  id:"loop", title:"A", pageIndex:1, pageCount:2,
+  hint:"Age and Drive sit up top with ECHO and Erase; Warp, Darken, VINYL and Hiss fill the bottom row.",
+  cells:[
+    {label:"Age",kind:"dial",idx:2,values:[{t:"3s",f:0},{t:"180s",f:.59},{t:"300s",f:1}],
+      desc:v=>"Age — knob 1. How long this memory takes to fade to silence: "+v.t+". Also the clock every flavor knob's glide is timed against."},
+    {label:"Drive",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"25%",f:.25},{t:"70%",f:.7}],
+      desc:v=>"Drive — knob 2. Tape saturation, "+v.t+". Not turn-based — eases toward its value continuously."},
+    {label:"ECHO",kind:"box",idx:0,values:["-","7","F","O"],
+      desc:v=>"ECHO — knob 3, read-only. This memory's own state as one character: "+v+"."},
+    {label:"Erase",kind:"trigger",idx:0,values:["ERASE"],
+      desc:v=>"Erase — knob 4. Always reads ERASE. Instant on an empty or recording memory; a 10-second fade on a playing one."},
+    {label:"Warp",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"35%",f:.35},{t:"70%",f:.7}],
+      desc:v=>"Warp — knob 5, "+v.t+". Pitch wobble — wow and flutter on the read head. Starts at zero; turn-based."},
+    {label:"Darken",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"40%",f:.4},{t:"85%",f:.85}],
+      desc:v=>"Darken — knob 6, "+v.t+". Reverb wash that gets more present, darker, and longer together. Starts at zero; turn-based."},
+    {label:"VINYL",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"55%",f:.55},{t:"90%",f:.9}],
+      desc:v=>"VINYL — knob 7, "+v.t+". Surface crackle, volume then density past halfway. Starts at zero; turn-based."},
+    {label:"Hiss",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"20%",f:.2},{t:"50%",f:.5}],
+      desc:v=>"Hiss — knob 8, "+v.t+". Brightened tape noise, kept deliberately quiet. Starts at zero; turn-based."},
+  ]
+});
+
+/* ============ ramp mechanic demo ============ */
+(function(){
+  const fill=document.getElementById("rFill"), target=document.getElementById("rTarget");
+  const applied=document.getElementById("rApplied"), msg=document.getElementById("rMsg");
+  const frzBtn=document.getElementById("rFreeze");
+  let cur=0, touched=false, frozen=false, raf=null;
+
+  function setBar(v){ fill.style.width=v+"%"; applied.textContent="applied "+Math.round(v)+"%"; }
+  function animate(to,dur,label){
+    cancelAnimationFrame(raf);
+    const from=cur, start=performance.now(), d=Math.max(dur,1);
+    function step(t){
+      const p=Math.min(1,(t-start)/d);
+      cur=from+(to-from)*p; setBar(cur);
+      if(p<1) raf=requestAnimationFrame(step); else { cur=to; setBar(cur); }
+    }
+    raf=requestAnimationFrame(step);
+    msg.innerHTML=label;
+  }
+  document.querySelectorAll(".ramp-buttons button[data-v]").forEach(btn=>{
+    btn.onclick=()=>{
+      const v=parseFloat(btn.dataset.v);
+      target.style.left=v+"%";
+      if(frozen){
+        animate(v,650,"Frozen — glides over a fixed <b>150ms</b> (slowed down here to be visible). Live, knob-following control.");
+      } else if(!touched){
+        touched=true; cancelAnimationFrame(raf); cur=v; setBar(v);
+        msg.innerHTML="<b>First touch</b> — jumped straight to "+v+"%. No ramp.";
+      } else {
+        const remain=1300+Math.random()*900;
+        animate(v,remain,"<b>Turned again</b> — gliding toward "+v+"% over whatever's left of this memory's Age.");
+      }
+    };
+  });
+  frzBtn.onclick=()=>{
+    frozen=!frozen; frzBtn.textContent="Frozen: "+(frozen?"on":"off"); frzBtn.classList.toggle("on",frozen);
+  };
+})();
+</script>
+</body>
+</html>
