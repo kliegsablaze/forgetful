@@ -562,7 +562,7 @@ function buildDevice(mount, page){
     const tc = ti>=0 ? page.cells[ti] : null;
     drawDevice(ctx,{
       title:page.title,
-      pageIndex:page.pageIndex||0, pageCount:page.pageCount||2,
+      pageIndex:page.pageIndex||0, pageCount:page.pageCount||5,
       touchedIndex: ti,
       touchedLabel: tc && tc.label.toUpperCase(),
       touchedValue: tc && headerValue(tc, tc.values[tc.idx]),
@@ -575,7 +575,7 @@ function buildDevice(mount, page){
 
 /* ---------------- Main page ---------------- */
 buildDevice(document.getElementById("mainDevice"),{
-  id:"main", title:"Main", pageIndex:0, pageCount:2,
+  id:"main", title:"Main", pageIndex:0, pageCount:5,
   hint:"Send, ECHO, REC and Freeze sit on the top row; the four memory volumes underneath.",
   cells:[
     {label:"Send",kind:"box",idx:0,values:["A","B","C","D"],
@@ -599,7 +599,7 @@ buildDevice(document.getElementById("mainDevice"),{
 
 /* ---------------- Loop page ---------------- */
 buildDevice(document.getElementById("loopDevice"),{
-  id:"loop", title:"A", pageIndex:1, pageCount:2,
+  id:"loop", title:"A", pageIndex:1, pageCount:5,
   hint:"Age and Drive sit up top with ECHO and Erase; Warp, Darken, VINYL and Hiss fill the bottom row.",
   cells:[
     {label:"Age",kind:"dial",idx:2,values:[{t:"3s",f:0},{t:"180s",f:.59},{t:"300s",f:1}],
