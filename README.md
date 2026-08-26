@@ -9,6 +9,10 @@ little more blurred each time you glance back at it.
 A [Schwung](https://github.com/charlesvestal/schwung) `audio_fx` module for
 Ableton Move.
 
+**[Read the manual →](https://kliegsablaze.github.io/forgetful/)** — every
+control on both pages, walked through on interactive reconstructions of the
+Move's own display.
+
 See [DESIGN.md](DESIGN.md) for the full interaction model, DSP architecture,
 and design history.
 
