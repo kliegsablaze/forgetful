@@ -18,11 +18,8 @@ and design history.
 
 ## Installing
 
-The easy way is [Schwung Manager](https://github.com/charlesvestal/schwung)
-(the web UI at `http://move.local:7700`) — Forgetful is in the module
-catalog, so it appears in the Module Store and updates itself from there.
-
-To install it by hand instead, download
+Forgetful isn't in the Schwung module catalog yet, so the Module Store
+won't find it — install it by hand. Download
 **[forgetful-module.tar.gz](https://github.com/kliegsablaze/forgetful/releases/latest/download/forgetful-module.tar.gz)**
 ([all releases](https://github.com/kliegsablaze/forgetful/releases)) and
 unpack it into the `audio_fx` module directory on the Move:
@@ -38,6 +35,9 @@ ssh ableton@move.local \
 
 Then rescan modules (or restart Schwung) and Forgetful shows up in any
 Signal Chain fx slot.
+
+Once the catalog entry lands, Schwung Manager's Module Store will install
+and update it for you and this step goes away.
 
 ## Building
 
@@ -72,8 +72,8 @@ MOVE_HOST=ableton@move.local ./scripts/install.sh
 ```
 
 Builds (if needed) and copies `forgetful.so` + `module.json` straight to a
-connected Move over SSH. For normal use, install via
-[schwung-manager](https://github.com/charlesvestal/schwung) instead.
+connected Move over SSH. For normal use, take the release tarball — see
+[Installing](#installing) above.
 
 ## Releasing
 
