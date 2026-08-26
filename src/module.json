@@ -1,0 +1,17 @@
+{
+  "id": "forgetful",
+  "name": "Forgetful",
+  "abbrev": "FRGT",
+  "version": "0.2.0",
+  "dsp": "forgetful.so",
+  "api_version": 2,
+  "component_type": "audio_fx",
+  "description": "One input, four tape memories, all of them forgetting.",
+  "capabilities": {
+    "audio_in": true,
+    "audio_out": true,
+    "chainable": true,
+    "component_type": "audio_fx",
+    "requires_continuous_processing": true
+  }
+}
