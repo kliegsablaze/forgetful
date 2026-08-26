@@ -16,6 +16,29 @@ Move's own display.
 See [DESIGN.md](DESIGN.md) for the full interaction model, DSP architecture,
 and design history.
 
+## Installing
+
+The easy way is [Schwung Manager](https://github.com/charlesvestal/schwung)
+(the web UI at `http://move.local:7700`) — Forgetful is in the module
+catalog, so it appears in the Module Store and updates itself from there.
+
+To install it by hand instead, download
+**[forgetful-module.tar.gz](https://github.com/kliegsablaze/forgetful/releases/latest/download/forgetful-module.tar.gz)**
+([all releases](https://github.com/kliegsablaze/forgetful/releases)) and
+unpack it into the `audio_fx` module directory on the Move:
+
+```bash
+scp forgetful-module.tar.gz ableton@move.local:/data/UserData/
+ssh ableton@move.local \
+  'mkdir -p /data/UserData/schwung/modules/audio_fx && \
+   tar xzf /data/UserData/forgetful-module.tar.gz \
+       -C /data/UserData/schwung/modules/audio_fx && \
+   rm /data/UserData/forgetful-module.tar.gz'
+```
+
+Then rescan modules (or restart Schwung) and Forgetful shows up in any
+Signal Chain fx slot.
+
 ## Building
 
 Requires Docker (for ARM64 cross-compilation) or a native aarch64 toolchain.
