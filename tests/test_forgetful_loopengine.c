@@ -1444,58 +1444,109 @@ int main(void) {
     }
 
     /* ---------------------------------------------------------------
-     * test21: Darken at maximum is a WALL, and gets there while you can
-     * still hear the loop. Scaling wet mix by raw `age` put full wet at
-     * memory==0 — the exact moment the take vanishes — so the knob's top
-     * half was never audible (reported 2026-08-27). DARKEN_AGE_FULL brings
-     * it in by the time the take is half gone.
+     * test21: Darken darkens, from the first touch, across the travel.
+     *
+     * The knob is a 4-pole lowpass swept exponentially (plus a reverb wash
+     * over the top of the range). A 6 kHz take is the clearest probe: it
+     * sits far above DARKEN_FC_MIN, so anything but a token filter has to
+     * take most of it away.
+     *
+     * This replaces an assertion that Darken made the take LOUDER, which
+     * was true of the reverb-only design it had briefly and is exactly
+     * backwards for something called Darken. Note both takes are measured
+     * FRESH: scaling flavours purely by age made every one of them silent
+     * at the moment of the turn, which is the regression this pins.
      * --------------------------------------------------------------- */
     {
-        int32_t rms_dry = 0, rms_wet = 0;
+        int32_t rms[2];
         for (int pass = 0; pass < 2; pass++) {
             void *inst = api->create_instance(".", NULL);
             check(inst != NULL, "test21: create_instance");
-            api->set_param(inst, "loopA_decay_rate", "30");
-            /* A TONE, not the DC constant the other tests use: DC through a
-             * 0.98-feedback comb has a gain of ~1/(1-fb), so a DC take reads
-             * as "louder than dry" at ANY wet fraction and cannot tell full
-             * wet from half wet. */
+            api->set_param(inst, "loopA_decay_rate", "300");
+            api->set_param(inst, "input_routing", "A");
+            press_record(api, inst);
             float phase = 0.0f;
-            record_full_buffer_loop_a(api, inst, &phase);
-            api->set_param(inst, "loopA_hiss", "0");
-            api->set_param(inst, "loopA_chaos", "0");
-            api->set_param(inst, "loopA_wow", "0");
-            api->set_param(inst, "loopA_saturation", "0");
+            int16_t tb[BLOCK_FRAMES * 2];
+            for (int b = 0; b < 200; b++) {
+                fill_tone(tb, BLOCK_FRAMES, 0.30f, 6000.0f, &phase);
+                api->process_block(inst, tb, BLOCK_FRAMES);
+            }
+            api->set_param(inst, "master_record", "STOP!");
             api->set_param(inst, "loopA_volume", "1");
-            /* half gone: age == 0.5, which is DARKEN_AGE_FULL */
-            run_silence(api, inst, (long)SAMPLE_RATE * 15);
-            api->set_param(inst, "loopA_hf_loss", pass == 0 ? "0" : "1");
-            run_silence(api, inst, (long)SAMPLE_RATE / 2);
+            /* only touch the knob under test, so this is its FIRST touch
+             * and snaps; a second touch would glide over the take's whole
+             * remaining life and measure almost nothing. */
+            if (pass == 1) api->set_param(inst, "loopA_hf_loss", "1");
+            run_silence(api, inst, (long)SAMPLE_RATE / 4);
 
-            int16_t buf[BLOCK_FRAMES * 2];
             double tot = 0.0; long n = 0;
-            for (int b = 0; b < 80; b++) {
-                fill_silence(buf, BLOCK_FRAMES);
-                api->process_block(inst, buf, BLOCK_FRAMES);
+            for (int b = 0; b < 60; b++) {
+                fill_silence(tb, BLOCK_FRAMES);
+                api->process_block(inst, tb, BLOCK_FRAMES);
                 for (int i = 0; i < BLOCK_FRAMES * 2; i += 2) {
-                    tot += (double)buf[i] * (double)buf[i];
-                    n++;
+                    tot += (double)tb[i] * (double)tb[i]; n++;
                 }
             }
-            int32_t r = (int32_t)sqrt(tot / (double)n);
-            if (pass == 0) rms_dry = r; else rms_wet = r;
+            rms[pass] = (int32_t)sqrt(tot / (double)n);
             api->destroy_instance(inst);
         }
-        /* Under the old raw-`age` scaling this was HALF wet at this point
-         * and measured quieter than dry, so the ratio was below 1. */
-        check(rms_wet > rms_dry * 5 / 4,
-              "test21: Darken at maximum on a half-decayed take is a wall — "
-              "louder and denser than the same take undarkened (measures "
-              "~1.44x). Under raw age-scaling this was ~0.22x: half wet, and "
-              "the wash it faded toward was quieter than the signal it "
-              "replaced, so the knob dug a HOLE rather than building a wall "
-              "— which is what 'not pronounced enough' actually was.");
+        check(rms[0] > 1000, "test21: the 6kHz take is clearly audible undarkened");
+        check(rms[1] * 4 < rms[0],
+              "test21: Darken at maximum takes most of a 6kHz take away on "
+              "the FIRST touch, with no ageing needed — it is a lowpass, and "
+              "it works the moment you turn it");
+    }
 
+    /* ---------------------------------------------------------------
+     * test22: Warp warps, on a fresh take. Same regression, other knob:
+     * wow/flutter/drift depth was multiplied by age, so the whole stage
+     * was multiplied by zero on the take you had just recorded.
+     *
+     * Renders the SAME take twice, changing nothing but Warp, and measures
+     * how far the two diverge. Only the read-speed modulation can account
+     * for a difference.
+     * --------------------------------------------------------------- */
+    {
+        static int16_t out[2][60 * BLOCK_FRAMES];
+        for (int pass = 0; pass < 2; pass++) {
+            void *inst = api->create_instance(".", NULL);
+            check(inst != NULL, "test22: create_instance");
+            api->set_param(inst, "loopA_decay_rate", "300");
+            api->set_param(inst, "input_routing", "A");
+            press_record(api, inst);
+            float phase = 0.0f;
+            int16_t tb[BLOCK_FRAMES * 2];
+            for (int b = 0; b < 200; b++) {
+                fill_tone(tb, BLOCK_FRAMES, 0.30f, 440.0f, &phase);
+                api->process_block(inst, tb, BLOCK_FRAMES);
+            }
+            api->set_param(inst, "master_record", "STOP!");
+            api->set_param(inst, "loopA_volume", "1");
+            api->set_param(inst, "loopA_hiss", "0");
+            api->set_param(inst, "loopA_chaos", "0");
+            api->set_param(inst, "loopA_hf_loss", "0");
+            api->set_param(inst, "loopA_saturation", "0");
+            if (pass == 1) api->set_param(inst, "loopA_wow", "1");
+            run_silence(api, inst, (long)SAMPLE_RATE / 4);
+            for (int b = 0; b < 60; b++) {
+                fill_silence(tb, BLOCK_FRAMES);
+                api->process_block(inst, tb, BLOCK_FRAMES);
+                for (int i = 0; i < BLOCK_FRAMES; i++)
+                    out[pass][b * BLOCK_FRAMES + i] = tb[i * 2];
+            }
+            api->destroy_instance(inst);
+        }
+        double tot = 0.0, dif = 0.0;
+        for (int i = 0; i < 60 * BLOCK_FRAMES; i++) {
+            tot += (double)out[0][i] * out[0][i];
+            double d = (double)out[0][i] - out[1][i];
+            dif += d * d;
+        }
+        check(tot > 0.0, "test22: the reference take is not silent");
+        check(dif > tot * 0.04,
+              "test22: Warp at maximum audibly moves a FRESH take — the two "
+              "renders differ by well over the noise floor, where age-scaled "
+              "warp left them bit-identical");
     }
 
     if (g_failures > 0) {

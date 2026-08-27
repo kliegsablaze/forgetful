@@ -147,6 +147,17 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
 
 #define PI_F 3.14159265358979323846f
 
+/* ---- Flavour arrival --------------------------------------------------
+ * Every flavour is worth hearing the moment you turn it AND worth more as
+ * the take ages. Scaling straight by `age` (2026-08-27) got the second
+ * half right and destroyed the first: on a fresh loop the multiplier is
+ * zero, so Warp and Darken did precisely nothing at the moment you were
+ * listening for them, which is what "doing nothing I can hear" was.
+ * FLAVOUR_IMMEDIATE is how much of the knob you get straight away; the
+ * rest arrives by the time the take is FLAVOUR_AGE_FULL gone. */
+#define FLAVOUR_IMMEDIATE  0.45f
+#define FLAVOUR_AGE_FULL   0.50f
+
 #define WOW_RATE_HZ        0.7f
 #define FLUTTER_RATE_HZ    7.0f
 
@@ -201,8 +212,20 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * (it has no flavor_ramp_t, so it needs its own one-off step holder). */
 #define FROZEN_GLIDE_SECONDS 0.15f
 
-#define WOW_MOD_DEPTH      0.07f
-#define FLUTTER_MOD_DEPTH  0.045f
+/* ---- Warp: tape that cannot hold its speed ---------------------------
+ * Three things at once, because two sines read as a chorus pedal rather
+ * than as tape: a slow WOW, a fast FLUTTER, and a DRIFT that wanders at
+ * random. The drift is what stops it sounding periodic — a real transport
+ * sags unpredictably, and a listener locks onto anything that repeats.
+ *
+ * Flutter is scaled by the square of the knob so it only shows up once
+ * you are past halfway: gentle settings are a slow sag, extreme settings
+ * are a machine coming apart. Full depth is ~7.5% ≈ 1.25 semitones. */
+#define WOW_MOD_DEPTH      0.030f
+#define FLUTTER_MOD_DEPTH  0.020f
+#define DRIFT_MOD_DEPTH    0.025f
+#define DRIFT_HOLD_SECONDS 0.9f   /* how often the drift picks a new target */
+#define DRIFT_GLIDE_SECONDS 0.35f /* how long it takes to get there */
 
 #define HISS_CEILING          0.040f /* Raised back up 2026-08-27, when hiss
                                       * stopped being constant and started
@@ -274,6 +297,25 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * decays at all). */
 #define REVERB_NUM_COMBS     4
 #define REVERB_NUM_ALLPASS   2
+/* ---- Darken: the top end going --------------------------------------
+ * The name says darkening, so the primary effect is now a real lowpass —
+ * four cascaded one-poles, 24 dB/oct, swept EXPONENTIALLY from bypass
+ * down to DARKEN_FC_MIN. Exponential because that is what makes the knob
+ * scale evenly: half way is a musical octave-ish midpoint, not already in
+ * the mud. A single 6 dB/oct pole was the original implementation here
+ * and was reported as inaudible; replacing it with reverb alone answered
+ * "wall" but not "darken", and left the bottom half of the travel doing
+ * nothing you could name.
+ *
+ * The reverb wash is still there, but as the TOP of the range only: past
+ * DARKEN_WASH_KNEE it blends in over the filtered signal, so maximum is
+ * still the dark wall asked for on 2026-08-27 while everything below it
+ * is audibly, gradually losing brightness. The wash is fed the FILTERED
+ * signal, so the tail is as dark as the loop is. */
+#define DARKEN_POLES         4
+#define DARKEN_FC_MAX    18000.0f
+#define DARKEN_FC_MIN      200.0f
+#define DARKEN_WASH_KNEE     0.55f
 #define DARKEN_DAMPING       0.55f /* comb damping at full wet — how dark the
                                     * wash goes. Was 0.4; raised 2026-08-27
                                     * with the age curve, since "Darken" at
@@ -474,6 +516,13 @@ typedef struct {
 
     /* degradation */
     float memory;
+    float darken_lp_l[DARKEN_POLES], darken_lp_r[DARKEN_POLES];
+    /* per-block, hoisted out of the sample loop: powf/expf once per block
+     * per loop rather than 128 times. The chase behind them moves over
+     * seconds, so block granularity is inaudible. */
+    float darken_a, darken_wash, darken_damp1, darken_fb, warp_amt;
+    float warp_drift, warp_drift_target;
+    int   warp_drift_countdown;
     float hiss_lp_l, hiss_lp_r;  /* hiss-coloring filter state, see HISS_COLOR_COEFF */
     float crackle_env;  /* VINYL click/pop envelope, see CRACKLE_DUST_MAX_PROB */
     int   frozen;  /* master_freeze: memory stops draining, loop keeps
@@ -660,6 +709,9 @@ static void reset_take(loop_engine_t *loop) {
     loop->overdub_gain = 0.0f;
     loop->overdub_last_idx = -1;
     loop->applied_wow = loop->applied_hf_loss = loop->applied_hiss = 0.0f;
+    for (int k = 0; k < DARKEN_POLES; k++) loop->darken_lp_l[k] = loop->darken_lp_r[k] = 0.0f;
+    loop->warp_drift = loop->warp_drift_target = 0.0f;
+    loop->warp_drift_countdown = 0;
     loop->applied_saturation = loop->applied_crackle = 0.0f;
     loop->wow_ramp = loop->hf_loss_ramp = loop->hiss_ramp = loop->crackle_ramp = (flavor_ramp_t){0};
     loop->saturation_glide_step = 0.0f;
@@ -693,6 +745,9 @@ static void close_recording(loop_engine_t *loop) {
     loop->read_head = 0.0;
     loop->memory = 1.0f;
     loop->applied_wow = loop->applied_hf_loss = loop->applied_hiss = 0.0f;
+    for (int k = 0; k < DARKEN_POLES; k++) loop->darken_lp_l[k] = loop->darken_lp_r[k] = 0.0f;
+    loop->warp_drift = loop->warp_drift_target = 0.0f;
+    loop->warp_drift_countdown = 0;
     loop->applied_saturation = loop->applied_crackle = 0.0f;
     loop->wow_ramp = loop->hf_loss_ramp = loop->hiss_ramp = loop->crackle_ramp = (flavor_ramp_t){0};
     loop->saturation_glide_step = 0.0f;
@@ -777,9 +832,41 @@ static void v2_destroy_instance(void *i) {
 
 /* ---- audio ---- */
 
+/* How much of a flavour knob is in force right now: some of it the moment
+ * you turn it, the rest arriving as the take ages. See FLAVOUR_IMMEDIATE. */
+static inline float flavour_reach(float knob, float age) {
+    float a = clampf(age / FLAVOUR_AGE_FULL, 0.0f, 1.0f);
+    return clampf(knob, 0.0f, 1.0f) *
+           (FLAVOUR_IMMEDIATE + (1.0f - FLAVOUR_IMMEDIATE) * a);
+}
+
 static void v2_process_block(void *instance, int16_t *lr, int frames) {
     inst_t *s = (inst_t *)instance;
     if (!s) return;
+
+    /* Per-block prepass: anything needing powf/expf is computed once per
+     * loop per block instead of once per sample. */
+    for (int li = 0; li < NUM_LOOPS; li++) {
+        loop_engine_t *loop = &s->loops[li];
+        if (loop->state != LOOP_LOOPING) continue;
+        float age = 1.0f - clampf(loop->memory, 0.0f, 1.0f);
+
+        loop->warp_amt = flavour_reach(loop->applied_wow, age);
+
+        float d = flavour_reach(loop->applied_hf_loss, age);
+        if (d <= 0.0001f) {
+            loop->darken_a = 1.0f;          /* exact bypass */
+        } else {
+            float fc = DARKEN_FC_MAX * powf(DARKEN_FC_MIN / DARKEN_FC_MAX, d);
+            loop->darken_a = 1.0f - expf(-2.0f * PI_F * fc / SAMPLE_RATE);
+            if (loop->darken_a > 1.0f) loop->darken_a = 1.0f;
+        }
+        loop->darken_wash  = clampf((d - DARKEN_WASH_KNEE) /
+                                    (1.0f - DARKEN_WASH_KNEE), 0.0f, 1.0f);
+        loop->darken_damp1 = d * DARKEN_DAMPING;
+        loop->darken_fb    = REVERB_FEEDBACK_MIN +
+                             d * (REVERB_FEEDBACK_MAX - REVERB_FEEDBACK_MIN);
+    }
 
     for (int i = 0; i < frames; i++) {
         int16_t raw_dry_l = lr[i * 2];
@@ -831,10 +918,23 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * stops — a frozen take stays exactly as ruined as it was. */
                 float age = 1.0f - clampf(loop->memory, 0.0f, 1.0f);
 
-                /* wow/flutter-modulated read speed */
+                /* Warp: wow + flutter + a random drift, see WOW_MOD_DEPTH.
+                 * Flutter enters on the square of the knob so the bottom of
+                 * the travel is a slow sag and only the top is a transport
+                 * tearing itself apart. */
+                if (loop->warp_drift_countdown <= 0) {
+                    loop->warp_drift_target = rng_bipolar(&loop->rng_state);
+                    loop->warp_drift_countdown =
+                        (int)(SAMPLE_RATE * DRIFT_HOLD_SECONDS);
+                }
+                loop->warp_drift_countdown--;
+                loop->warp_drift += (loop->warp_drift_target - loop->warp_drift) /
+                                    (DRIFT_GLIDE_SECONDS * SAMPLE_RATE);
+
+                float w = loop->warp_amt;
                 float mod = (sinf(loop->wow_phase) * WOW_MOD_DEPTH +
-                             sinf(loop->flutter_phase) * FLUTTER_MOD_DEPTH) *
-                            loop->applied_wow * age;
+                             loop->warp_drift * DRIFT_MOD_DEPTH) * w +
+                            sinf(loop->flutter_phase) * FLUTTER_MOD_DEPTH * w * w;
                 double speed = 1.0 + mod;
 
                 loop->wow_phase += 2.0f * PI_F * WOW_RATE_HZ / SAMPLE_RATE;
@@ -936,25 +1036,42 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * all driven by the SAME applied_hf_loss chase value, so
                  * presence/darkness/length build together off one knob.
                  * wet_amount=0 is an exact raw_l/raw_r passthrough. */
-                float darken_age = clampf(age / DARKEN_AGE_FULL, 0.0f, 1.0f);
-                float wet_amount = clampf(loop->applied_hf_loss, 0.0f, 1.0f) * darken_age;
-                float damp1 = wet_amount * DARKEN_DAMPING;
-                float damp2 = 1.0f - damp1;
-                float feedback = REVERB_FEEDBACK_MIN + wet_amount * (REVERB_FEEDBACK_MAX - REVERB_FEEDBACK_MIN);
-                float rev_input = (raw_l + raw_r) * 0.5f;
-                float rev_l = 0.0f, rev_r = 0.0f;
-                for (int c = 0; c < REVERB_NUM_COMBS; c++) {
-                    rev_l += reverb_comb_process(&loop->comb_l[c], rev_input, feedback, damp1, damp2);
-                    rev_r += reverb_comb_process(&loop->comb_r[c], rev_input, feedback, damp1, damp2);
+                /* (a) the lowpass — this is the part you hear across the
+                 * whole travel. darken_a == 1 is an exact passthrough. */
+                float dark_l = raw_l, dark_r = raw_r;
+                if (loop->darken_a < 1.0f) {
+                    for (int k = 0; k < DARKEN_POLES; k++) {
+                        loop->darken_lp_l[k] += loop->darken_a * (dark_l - loop->darken_lp_l[k]);
+                        dark_l = loop->darken_lp_l[k];
+                        loop->darken_lp_r[k] += loop->darken_a * (dark_r - loop->darken_lp_r[k]);
+                        dark_r = loop->darken_lp_r[k];
+                    }
                 }
-                rev_l *= 1.0f / (float)REVERB_NUM_COMBS;
-                rev_r *= 1.0f / (float)REVERB_NUM_COMBS;
-                for (int a = 0; a < REVERB_NUM_ALLPASS; a++) {
-                    rev_l = reverb_allpass_process(&loop->allpass_l[a], rev_l);
-                    rev_r = reverb_allpass_process(&loop->allpass_r[a], rev_r);
+
+                /* (b) the wash, over the top of the range only. Fed the
+                 * filtered signal so the tail is as dark as the loop. */
+                float filt_l, filt_r;
+                if (loop->darken_wash > 0.0f) {
+                    float damp1 = loop->darken_damp1;
+                    float damp2 = 1.0f - damp1;
+                    float rev_input = (dark_l + dark_r) * 0.5f;
+                    float rev_l = 0.0f, rev_r = 0.0f;
+                    for (int c = 0; c < REVERB_NUM_COMBS; c++) {
+                        rev_l += reverb_comb_process(&loop->comb_l[c], rev_input, loop->darken_fb, damp1, damp2);
+                        rev_r += reverb_comb_process(&loop->comb_r[c], rev_input, loop->darken_fb, damp1, damp2);
+                    }
+                    rev_l *= 1.0f / (float)REVERB_NUM_COMBS;
+                    rev_r *= 1.0f / (float)REVERB_NUM_COMBS;
+                    for (int a = 0; a < REVERB_NUM_ALLPASS; a++) {
+                        rev_l = reverb_allpass_process(&loop->allpass_l[a], rev_l);
+                        rev_r = reverb_allpass_process(&loop->allpass_r[a], rev_r);
+                    }
+                    filt_l = dark_l + (rev_l - dark_l) * loop->darken_wash;
+                    filt_r = dark_r + (rev_r - dark_r) * loop->darken_wash;
+                } else {
+                    filt_l = dark_l;
+                    filt_r = dark_r;
                 }
-                float filt_l = raw_l + (rev_l - raw_l) * wet_amount;
-                float filt_r = raw_r + (rev_r - raw_r) * wet_amount;
 
                 /* 2. Saturation (Warmth) — crossfade between the dry
                  * (filtered) signal and a FIXED full-drive tanh curve,
