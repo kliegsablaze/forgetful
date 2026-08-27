@@ -19,7 +19,7 @@
  * depends on how long the recording is.
  *
  * Covers:
- *   0. chain_params / ui_hierarchy shape — exactly 48 entries (8 master +
+ *   0. chain_params / ui_hierarchy shape — exactly 44 entries (8 master +
  *      4x8 loop), every expected key present in both, including
  *      master_record/master_freeze, and no OFF option in Route's options
  *      list.
@@ -376,8 +376,8 @@ int main(void) {
         int key_count = 0;
         const char *p = cp;
         while ((p = strstr(p, "\"key\":\"")) != NULL) { key_count++; p += 7; }
-        check(key_count == 48,
-              "test0: chain_params has exactly 48 entries (8 master + 4x10 loop)");
+        check(key_count == 44,
+              "test0: chain_params has exactly 44 entries (8 master + 4x9 loop; Erase went 2026-08-27)");
 
         n = api->get_param(inst, "ui_hierarchy", hier, sizeof(hier));
         check(n > 0, "test0: ui_hierarchy readable");
@@ -416,7 +416,7 @@ int main(void) {
             check(strstr(hier, probe) != NULL, "test0: ui_hierarchy contains master key");
         }
         static const char *loop_suffixes[] = {
-            "decay_rate", "wow", "hf_loss", "hiss", "send", "chaos", "state", "erase", "speed", "tone"
+            "decay_rate", "wow", "hf_loss", "hiss", "send", "chaos", "state", "speed", "tone"
         };
         static const char letters[] = { 'A', 'B', 'C', 'D' };
         for (int li = 0; li < 4; li++) {
@@ -616,60 +616,9 @@ int main(void) {
         api->destroy_instance(inst);
     }
 
-    /* ---- Test 4: single-click erase starts a fade, not an instant clear
-     * (Loop A). Removed double-click-confirm 2026-08-25: touch+jog-click is
-     * already a deliberate two-part gesture, a second click on top was
-     * redundant. Erasing a LOOPING loop now fades it out over
-     * ERASE_FADE_SECONDS instead of cutting it, and memory decay is
-     * suspended for the duration (see the LOOPING case's erasing guard). ---- */
-    {
-        void *inst = api->create_instance(".", NULL);
-        check(inst != NULL, "test4: create_instance");
+    /* Test 4 removed with Erase (2026-08-27). */
 
-        float phase = 0.0f;
-        record_full_buffer_loop_a(api, inst, &phase);
-        check(status_is_looping(status_of(api, inst, 'A')), "test4: Looping before erase");
-
-        api->set_param(inst, "loopA_erase", "Erase!");
-        check(strcmp(status_of(api, inst, 'A'), "Erasing...") == 0,
-              "test4: single click starts the fade immediately (Erasing...), not an instant clear");
-
-        /* Well before the fade completes: still fading, buffer not cleared. */
-        run_silence(api, inst, TEST_DECAY_FRAMES(2));
-        check(strcmp(status_of(api, inst, 'A'), "Erasing...") == 0,
-              "test4: still Erasing partway through the fade");
-
-        /* A repeat press mid-fade must not restart or double-speed it —
-         * confirm by running the ORIGINAL remaining budget and expecting
-         * completion right on schedule, not late. */
-        api->set_param(inst, "loopA_erase", "Erase!");
-        run_silence(api, inst, TEST_DECAY_FRAMES(8) + BLOCK_FRAMES * 4);
-        check(strcmp(status_of(api, inst, 'A'), STATUS_READY) == 0,
-              "test4: fade completes on schedule (10s total) and drops to Ready, buffer cleared");
-
-        api->destroy_instance(inst);
-    }
-
-    /* ---- Test 5: a fresh master_record press claims a loop mid-erase-fade
-     * immediately, rather than waiting out the fade (Loop A). ---- */
-    {
-        void *inst = api->create_instance(".", NULL);
-        check(inst != NULL, "test5: create_instance");
-
-        float phase = 0.0f;
-        record_full_buffer_loop_a(api, inst, &phase);
-        check(status_is_looping(status_of(api, inst, 'A')), "test5: Looping before erase");
-
-        api->set_param(inst, "loopA_erase", "Erase!");
-        check(strcmp(status_of(api, inst, 'A'), "Erasing...") == 0, "test5: fade started");
-        run_silence(api, inst, TEST_DECAY_FRAMES(1)); /* partway through the fade, nowhere near done */
-
-        press_record(api, inst);
-        check(strcmp(status_of(api, inst, 'A'), "Recording") == 0,
-              "test5: pressing record mid-fade claims the loop immediately, not after the fade finishes");
-
-        api->destroy_instance(inst);
-    }
+    /* Test 5 removed with Erase (2026-08-27). */
 
     /* ---- Test 6: routing — closes A via a routing change (not buffer-
      * full), and A's decay keeps progressing on its own once B is the
@@ -911,51 +860,7 @@ int main(void) {
         api->destroy_instance(inst);
     }
 
-    /* ---- Test 13: erase in the two states 4/5 never exercise (both only
-     * fire while Looping, where erase now fades rather than cuts). The
-     * design doc says erase "works identically regardless of Input Routing
-     * state"; it should also work identically regardless of the loop's OWN
-     * state — Idle and Recording both still clear INSTANTLY, single click,
-     * no fade (nothing to fade for Idle; Recording is an unfinished take
-     * being discarded, not a loop being let go of — see the erase handler
-     * comment in forgetful.c). ---- */
-    {
-        /* 13a: firing erase on a fresh, empty (Ready) loop must not crash or
-         * misbehave — instant no-op clear, still Ready, harmlessly. */
-        void *inst_idle = api->create_instance(".", NULL);
-        check(inst_idle != NULL, "test12a: create_instance");
-        check(strcmp(status_of(api, inst_idle, 'A'), STATUS_READY) == 0, "test12a: fresh loop is Ready");
-
-        api->set_param(inst_idle, "loopA_erase", "Erase!");
-        check(strcmp(erase_readout(api, inst_idle, 'A'), "ERASE") == 0,
-              "test12a: erase readout is always 'ERASE' (not state-aware — no arm/confirm state any more, 2026-08-25 renamed from the idle '-' spelling)");
-        check(strcmp(status_of(api, inst_idle, 'A'), STATUS_READY) == 0, "test12a: still Ready, no crash/misbehavior");
-
-        api->destroy_instance(inst_idle);
-
-        /* 13b: firing erase while actively Recording hard-closes it
-         * immediately (no fade — see the erase handler), discarding
-         * whatever was captured so far. */
-        void *inst_rec = api->create_instance(".", NULL);
-        check(inst_rec != NULL, "test12b: create_instance");
-        api->set_param(inst_rec, "input_routing", TEST_ROUTE_A);
-        press_record(api, inst_rec);
-
-        float phase = 0.0f;
-        run_tone(api, inst_rec, BLOCK_FRAMES * 20, 0.5f, 440.0f, &phase);
-        check(strcmp(status_of(api, inst_rec, 'A'), "Recording") == 0, "test12b: Recording before erase");
-
-        api->set_param(inst_rec, "loopA_erase", "Erase!");
-        check(strcmp(status_of(api, inst_rec, 'A'), STATUS_READY) == 0,
-              "test12b: single click drops a Recording loop straight to Ready, discarding the take, no fade");
-
-        /* A fresh recording can start immediately afterward. */
-        press_record(api, inst_rec);
-        check(strcmp(status_of(api, inst_rec, 'A'), "Recording") == 0,
-              "test12b: engine accepts a new recording right after an erase-during-Recording");
-
-        api->destroy_instance(inst_rec);
-    }
+    /* Test 13 removed with Erase (2026-08-27). */
 
     /* ---- Test 14: `state` get/set round-trip — get_param("state") is used
      * for ordinary slot autosave/patch reload. Confirms: (a) live knobs
@@ -1335,50 +1240,8 @@ int main(void) {
         api->destroy_instance(inst);
     }
 
-    /* ---------------------------------------------------------------
-     * test19: an erase counts DOWN, on ECHO and on the trigger itself.
-     * Before 2026-08-27 both sat on whatever they read when erase fired.
-     * --------------------------------------------------------------- */
-    {
-        void *inst = api->create_instance(".", NULL);
-        check(inst != NULL, "test19: create_instance");
-        record_full_buffer_loop_a_constant(api, inst, 8000);
-        api->set_param(inst, "loopA_erase", "Erase!");
-
-        char ov[16], tr[32];
-        int seen_digit = 0, seen_erasing = 0, descends = 1, last = 10;
-        int distinct = 0, prev_digit = -1;
-        for (int step = 0; step < 12; step++) {
-            run_silence(api, inst, (long)SAMPLE_RATE);   /* 1 second */
-            api->get_param(inst, "master_loops_overview", ov, sizeof(ov));
-            api->get_param(inst, "loopA_erase", tr, sizeof(tr));
-            if (ov[0] >= '0' && ov[0] <= '9') {
-                int d = ov[0] - '0';
-                seen_digit++;
-                if (d > last) descends = 0;
-                last = d;
-                if (d != prev_digit) { distinct++; prev_digit = d; }
-            }
-            if (strncmp(tr, "ERASING", 7) == 0) seen_erasing++;
-        }
-        /* `distinct`, not just `seen_digit`: before the fix ECHO fell
-         * through to the memory decile, which is FROZEN during an erase, so
-         * it read a constant "9" the whole way down. A constant trivially
-         * satisfies both "is a digit" and "never increases" — only the
-         * number of DISTINCT values separates a countdown from a stuck
-         * character. */
-        check(distinct >= 5, "test19: ECHO's digit actually moves while erasing "
-                             "(not stuck on one value for the whole fade)");
-        check(seen_digit >= 5, "test19: ECHO shows a digit while erasing");
-        check(descends, "test19: and that digit only ever counts down");
-        check(seen_erasing >= 5, "test19: the erase trigger reads ERASING n meanwhile");
-        api->get_param(inst, "master_loops_overview", ov, sizeof(ov));
-        api->get_param(inst, "loopA_erase", tr, sizeof(tr));
-        check(ov[0] == '-', "test19: ECHO reaches '-' once the loop is gone");
-        check(strcmp(tr, "ERASE") == 0, "test19: trigger returns to ERASE once done");
-
-        api->destroy_instance(inst);
-    }
+    /* test19 removed with Erase (2026-08-27) — it pinned the erase
+     * countdown on ECHO and on the trigger. */
 
     /* ---------------------------------------------------------------
      * test20: Hiss ACCUMULATES onto the medium.
@@ -1849,6 +1712,57 @@ int main(void) {
               "test29: hard right takes the bottom away (highpass)");
     }
 
+    /* ---------------------------------------------------------------
+     * test30: the flavour knobs return to zero when a take dies.
+     *
+     * At death and nowhere else. Doing it on every close_recording put
+     * the module and the UI out of step invisibly — the UI kept showing
+     * the old position while the module read zero, so the first nudge of
+     * the encoder wrote the OLD value back and the sound jumped.
+     * --------------------------------------------------------------- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        check(inst != NULL, "test30: create_instance");
+        api->set_param(inst, "input_routing", "A");
+        api->set_param(inst, "loopA_decay_rate", "6");
+        api->set_param(inst, "loopA_volume", "1");
+        press_record(api, inst);
+        int16_t tb[BLOCK_FRAMES * 2];
+        float phase = 0.0f;
+        for (int b = 0; b < 120; b++) {
+            fill_tone(tb, BLOCK_FRAMES, 0.28f, 330.0f, &phase);
+            api->process_block(inst, tb, BLOCK_FRAMES);
+        }
+        api->set_param(inst, "master_record", "STOP!");
+        api->set_param(inst, "loopA_wow", "0.7");
+        api->set_param(inst, "loopA_hf_loss", "0.6");
+        api->set_param(inst, "loopA_chaos", "0.8");
+        api->set_param(inst, "loopA_hiss", "0.5");
+        run_silence(api, inst, BLOCK_FRAMES * 20);
+
+        char v[32];
+        api->get_param(inst, "loopA_wow", v, sizeof(v));
+        check(atof(v) > 0.5, "test30: the knob holds while the take is alive");
+
+        run_silence(api, inst, (long)SAMPLE_RATE * 8);   /* well past its 6s */
+        static const char *flav[] = { "wow", "hf_loss", "chaos", "hiss" };
+        for (int i = 0; i < 4; i++) {
+            char key[32];
+            snprintf(key, sizeof(key), "loopA_%s", flav[i]);
+            api->get_param(inst, key, v, sizeof(v));
+            check(atof(v) == 0.0,
+                  "test30: every flavour knob is back at zero once the take "
+                  "has gone silent");
+        }
+        /* Age, and the controls that are NOT damage, are untouched. */
+        api->get_param(inst, "loopA_decay_rate", v, sizeof(v));
+        check(atof(v) > 5.0 && atof(v) < 7.0,
+              "test30: Age is not a flavour and survives");
+        api->get_param(inst, "loopA_speed", v, sizeof(v));
+        check(strcmp(v, "1x") == 0, "test30: speed survives too");
+        api->destroy_instance(inst);
+    }
+
     if (g_failures > 0) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;
@@ -1858,7 +1772,7 @@ int main(void) {
            "continuous decay, single-click erase fade-out, routing, "
            "status-line word buckets, Loops Overview format, too-short blip "
            "discard, parameter clamping, extreme "
-           "decay_rate, erase during Recording/Idle, state round-trip, "
+           "decay_rate, state round-trip, "
            "saturation passthrough, master_freeze, flavor-knob chase glide, "
            "overdub toggle, v2 flavor-ramp first-touch/second-touch)\n");
     return 0;

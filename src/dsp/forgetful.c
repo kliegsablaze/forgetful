@@ -131,14 +131,6 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
                                       * gain. Long enough to kill the step
                                       * edge, short enough that the front of
                                       * a note you punch in on survives. */
-#define ERASE_FADE_SECONDS    10.0f /* erase on a LOOPING loop fades out over
-                                      * this long, then clears — not an
-                                      * instant cut. Idle/Recording/Forgotten
-                                      * still clear immediately, since there
-                                      * is either nothing playing to fade or
-                                      * (Recording) an unfinished take being
-                                      * discarded rather than a loop being
-                                      * "let go of". */
 
 /* A recorded take ends wherever your finger left it, which is almost never
  * where it started, so the buffer wraps from one arbitrary sample to
@@ -870,14 +862,6 @@ typedef struct {
      * reverb_comb_tuning_l/r, not a fixed MAX_DELAY. */
     reverb_t wash;
 
-    /* erase fade-out: an ADDITIONAL output gain, independent of memory,
-     * ramping 1.0 -> 0.0 over ERASE_FADE_SECONDS once erase fires on a
-     * LOOPING loop; the buffer clears when it reaches 0 (see the erase
-     * handler and the LOOPING case's fade block). Memory decay is
-     * suspended while erasing — same reasoning as `frozen` — so the
-     * loop's own aging can't race the fade to silence. */
-    int   erasing;
-    float erase_fade_gain;
 
     /* display-only: set the instant memory hits 0; lets the UI see
      * "Forgotten" for a short window even though `state` has already
@@ -1041,8 +1025,6 @@ static void reset_take(loop_engine_t *loop) {
     loop->write_head = 0;
     loop->recorded_length = 0;
     loop->read_head = 0.0;
-    loop->erasing = 0;
-    loop->erase_fade_gain = 1.0f;
     loop->overdubbing = 0;
     loop->overdub_gain = 0.0f;
     loop->overdub_last_idx = -1;
@@ -1170,7 +1152,6 @@ static void init_loop(loop_engine_t *loop, uint32_t rng_seed) {
      * touched from the memset above is exactly that — nothing to set here).
      * Drive is gone; its knob is the reverb send now. */
     loop->decay_rate = 300.0f;
-    loop->erase_fade_gain = 1.0f;
     loop->forgotten_at          = TIME_NOT_SET;
     loop->rng_state = rng_seed;
 }
@@ -1617,7 +1598,7 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 /* Write it back onto the tape. Frozen means the medium is
                  * not moving past the head, so nothing is re-printed and
                  * the take stays exactly as ruined as it was. */
-                if (loop->medium_active && !loop->frozen && !loop->erasing) {
+                if (loop->medium_active && !loop->frozen) {
                     int from = loop->medium_last_idx;
                     int span = (from < 0) ? 0
                              : (idx0 - from + loop->recorded_length) % loop->recorded_length;
@@ -1657,8 +1638,8 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * flavor's applied_* target above via the chase, and erasing
                  * is a deliberate "let go of this now" fade-to-silence, not
                  * an accelerated version of the loop's own aging. */
-                wet_l = crackle_l * loop->memory * loop->erase_fade_gain;
-                wet_r = crackle_r * loop->memory * loop->erase_fade_gain;
+                wet_l = crackle_l * loop->memory;
+                wet_r = crackle_r * loop->memory;
 
                 /* 6. Master-page volume is applied once, after summing all
                  * four loops' wet below — not here per-loop-in-isolation,
@@ -1710,7 +1691,7 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * suspends everything here too, for the same reason as
                  * always: an erase in progress shouldn't race anything else
                  * to decide how the loop empties. */
-                if (!loop->erasing) {
+                {
                     if (!loop->frozen) {
                         float step = 1.0f / (loop->decay_rate * SAMPLE_RATE);
                         loop->memory -= step;
@@ -1724,24 +1705,27 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 if (loop->memory <= 0.0f) {
                     loop->memory = 0.0f;
                     loop->state = LOOP_FORGOTTEN;
+                    /* The take is gone, so the damage that was being done to
+                     * it goes with it: the flavour knobs return to zero and
+                     * the next take starts clean rather than inheriting
+                     * however far the last one had been taken apart.
+                     *
+                     * This is deliberately at DEATH and nowhere else. It
+                     * used to happen on every close_recording, which put the
+                     * module and the UI out of step in a way you could not
+                     * see — the UI went on showing the old position while
+                     * the module read zero, so the first nudge of the
+                     * encoder wrote the OLD value back and the sound jumped.
+                     * Here the loop has just fallen silent, which is the one
+                     * moment a knob snapping back to zero reads as the
+                     * consequence of something rather than a glitch. */
+                    loop->wow_ramp = loop->hf_loss_ramp =
+                        loop->hiss_ramp = loop->crackle_ramp = (flavor_ramp_t){0};
+                    loop->applied_wow = loop->applied_hf_loss =
+                        loop->applied_hiss = loop->applied_crackle = 0.0f;
                 }
 
-                /* 7. Erase fade-out: once armed (the erase handler), ramp
-                 * erase_fade_gain to 0 over ERASE_FADE_SECONDS — step 5
-                 * above already applies it every sample, so the loop
-                 * audibly fades out in place — then clear for real. reset_
-                 * take() also clears erasing/erase_fade_gain, so a fresh
-                 * take (or the natural IDLE/FORGOTTEN cycle) never inherits
-                 * a stale fade. */
-                if (loop->erasing) {
-                    loop->erase_fade_gain -= 1.0f / (ERASE_FADE_SECONDS * SAMPLE_RATE);
-                    if (loop->erase_fade_gain <= 0.0f) {
-                        loop->state = LOOP_IDLE;
-                        reset_take(loop);
-                        loop->memory = 0.0f;
-                        loop->forgotten_at = TIME_NOT_SET;
-                    }
-                }
+
                 break;
             }
 
@@ -1860,9 +1844,6 @@ static int loop_status_text(const loop_engine_t *loop, uint64_t total_frames, ch
         total_frames - loop->forgotten_at < FORGOTTEN_DISPLAY_FRAMES) {
         return snprintf(buf, len, "Forgotten");
     }
-    if (loop->erasing) {
-        return snprintf(buf, len, "Erasing...");
-    }
     switch (loop->state) {
         case LOOP_IDLE:      return snprintf(buf, len, "Ready");
         case LOOP_RECORDING: return snprintf(buf, len, "Recording");
@@ -1905,19 +1886,6 @@ static char loop_status_char(const loop_engine_t *loop, uint64_t total_frames) {
     }
     if (loop->overdubbing) {
         return 'O';
-    }
-    /* An erase outranks frozen: erasing a frozen loop is the one case
-     * where `frozen` is still set but the thing you want to watch is the
-     * fade, not the freeze. Counts down on erase_fade_gain rather than
-     * memory, so the digit runs the 10s of ERASE_FADE_SECONDS instead of
-     * the minutes of decay_rate — the same countdown, sped up to the time
-     * it now actually takes to go. Without this the character sat on
-     * whatever it read when erase fired and never moved again. */
-    if (loop->erasing) {
-        int e = (int)(loop->erase_fade_gain * 10.0f);
-        if (e > 9) e = 9;
-        if (e < 0) e = 0;
-        return (char)('0' + e);
     }
     if (loop->frozen) {
         return 'F';
@@ -1984,34 +1952,6 @@ static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *
         loop->speed_log_step   = fabsf(loop->speed_log_target - loop->speed_log_cur) /
                                  (SPEED_GLIDE_SECONDS * SAMPLE_RATE);
         return;
-    } else if (strcmp(suffix, "erase") == 0) {
-        /* gesture-test's pattern: fire on anything that isn't the idle
-         * spelling. Single click, no confirm — was double-click-confirm
-         * per the design doc, removed 2026-08-25: touching the knob AND
-         * jog-clicking it is already a deliberate two-part gesture nothing
-         * else can produce by accident, so a second click on top of that
-         * was redundant caution, not real safety.
-         *
-         * A LOOPING loop fades out over ERASE_FADE_SECONDS instead of
-         * cutting instantly — the actual clear happens once the fade
-         * reaches 0 (see the LOOPING case). Idle/Recording/Forgotten clear
-         * immediately: there's either nothing playing to fade, or
-         * (Recording) an unfinished take being discarded outright rather
-         * than a loop being "let go of". A press that lands mid-fade is a
-         * no-op — it doesn't restart the fade or double-speed it. */
-        if (strcmp(val, "-") != 0 && strcmp(val, "0") != 0) {
-            if (loop->state == LOOP_LOOPING) {
-                if (!loop->erasing) {
-                    loop->erasing = 1;
-                    loop->erase_fade_gain = 1.0f;
-                }
-            } else {
-                loop->state = LOOP_IDLE;
-                reset_take(loop);
-                loop->memory = 0.0f;
-                loop->forgotten_at = TIME_NOT_SET;
-            }
-        }
     }
 }
 
@@ -2030,25 +1970,7 @@ static int loop_get_param(const loop_engine_t *loop, uint64_t total_frames, cons
                                 : loop->speed_mul <= 0.6f  ? "1/2"
                                 : loop->speed_mul >= 1.5f  ? "2x" : "1x");
     }
-    if (strcmp(suffix, "erase") == 0) {
-        /* "ERASE" at rest (2026-08-25, was always "-"), "ERASING n" while
-         * one is running (2026-08-27), with the same digit ECHO shows for
-         * this loop so the two readouts agree.
-         *
-         * The earlier note here ruled "ERASING" out on a 5-char budget.
-         * That budget is LABEL_CHARS, which clips the grid LABEL under the
-         * icon — it does not apply to the value: erase is access "write",
-         * so its resting cell draws the trigger glyph and no text at all,
-         * and the only place this string appears is the touched header,
-         * which is a full 128px band. */
-        if (loop->erasing) {
-            int e = (int)(loop->erase_fade_gain * 10.0f);
-            if (e > 9) e = 9;
-            if (e < 0) e = 0;
-            return snprintf(buf, len, "ERASING %d", e);
-        }
-        return snprintf(buf, len, "ERASE");
-    }
+
     if (strcmp(suffix, "status") == 0) {
         return loop_status_text(loop, total_frames, buf, len);
     }
@@ -2173,11 +2095,7 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
          * play the loop as before. */
         if (strcmp(val, "-") != 0 && strcmp(val, "0") != 0) {
             loop_engine_t *loop = &s->loops[s->input_routing];
-            if (loop->state == LOOP_IDLE || loop->state == LOOP_FORGOTTEN || loop->erasing) {
-                /* A loop mid-erase-fade counts as available too — its
-                 * content is already being let go of, so a fresh press
-                 * just claims it immediately instead of waiting out the
-                 * fade. reset_take() clears erasing/erase_fade_gain. */
+            if (loop->state == LOOP_IDLE || loop->state == LOOP_FORGOTTEN) {
                 loop->state = LOOP_RECORDING;
                 reset_take(loop);
                 loop->forgotten_at = TIME_NOT_SET; /* new activity preempts the display window */
@@ -2387,8 +2305,6 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                  * pass as Master's own master_loops_overview. */
                 ",{\"key\":\"loop%c_state\",\"name\":\"ECHO\",\"type\":\"enum\","
                   "\"options\":[\"-\"],\"access\":\"read\"}"
-                ",{\"key\":\"loop%c_erase\",\"name\":\"Erase\",\"type\":\"enum\","
-                  "\"options\":[\"-\",\"Erase!\"],\"access\":\"write\"}"
                 ",{\"key\":\"loop%c_wow\",\"name\":\"Warp\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}"
                 ",{\"key\":\"loop%c_hf_loss\",\"name\":\"Darken\",\"type\":\"float\","
@@ -2397,7 +2313,7 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}"
                 ",{\"key\":\"loop%c_hiss\",\"name\":\"Hiss\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}",
-                c, c, c, c, c, c, c, c);
+                c, c, c, c, c, c, c);
         }
         pos += snprintf(json + pos, sizeof(json) - pos, "]");
         if (pos >= (int)sizeof(json) || pos >= len) return -1;
@@ -2462,9 +2378,9 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
             char c = LOOP_LETTERS[i];
             pos += snprintf(json + pos, sizeof(json) - pos,
                 ",\"loop%c\":{\"label\":\"Loop %c\",\"knobs\":["
-                  "\"loop%c_decay_rate\",\"loop%c_send\",\"loop%c_state\",\"loop%c_erase\","
+                  "\"loop%c_decay_rate\",\"loop%c_send\",\"\",\"loop%c_state\","
                   "\"loop%c_wow\",\"loop%c_hf_loss\",\"loop%c_chaos\",\"loop%c_hiss\"]}",
-                c, c, c, c, c, c, c, c, c, c);
+                c, c, c, c, c, c, c, c, c);
         }
         pos += snprintf(json + pos, sizeof(json) - pos, "}}");
         if (pos >= (int)sizeof(json) || pos >= len) return -1;
