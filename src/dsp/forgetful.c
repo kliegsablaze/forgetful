@@ -2432,37 +2432,36 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
             "{\"modes\":null,\"levels\":{"
             "\"root\":{\"label\":\"Forgetful\","
               "\"knobs\":[\"input_routing\",\"master_loops_overview\",\"master_record\",\"master_freeze\","
-                "\"loopA_volume\",\"loopB_volume\",\"loopC_volume\",\"loopD_volume\"],"
+                "\"loopA_speed\",\"loopB_speed\",\"loopC_speed\",\"loopD_speed\"],"
               "\"params\":["
                 "{\"key\":\"input_routing\",\"label\":\"Send\"},"
                 "{\"key\":\"master_loops_overview\",\"label\":\"ECHO\"},"
                 "{\"key\":\"master_record\",\"label\":\"REC\"},"
                 "{\"key\":\"master_freeze\",\"label\":\"Freeze\"},"
-                "{\"key\":\"loopA_volume\",\"label\":\"A\"},"
-                "{\"key\":\"loopB_volume\",\"label\":\"B\"},"
-                "{\"key\":\"loopC_volume\",\"label\":\"C\"},"
-                "{\"key\":\"loopD_volume\",\"label\":\"D\"},"
-                "{\"level\":\"distance\",\"label\":\"Distance\"},"
-                "{\"level\":\"loopA\",\"label\":\"A\"},"
-                "{\"level\":\"loopB\",\"label\":\"B\"},"
-                "{\"level\":\"loopC\",\"label\":\"C\"},"
-                "{\"level\":\"loopD\",\"label\":\"D\"}]}"
-              /* Distance: playback speed on the top row, reverb send
-               * underneath, so each memory reads as a column. Both controls
-               * push a memory further away — slower and lower, or wetter
-               * and less located — which is why it is no longer the Mixer
-               * now that the volumes have gone back to Main. Sits between
-               * Main and the memory pages because the nav entries in root's
-               * "params" are what the planner walks to order the bank. */
-              ",\"distance\":{\"label\":\"Distance\",\"knobs\":["
-                "\"loopA_speed\",\"loopB_speed\","
-                "\"loopC_speed\",\"loopD_speed\","
+                "{\"key\":\"loopA_speed\",\"label\":\"A\"},"
+                "{\"key\":\"loopB_speed\",\"label\":\"B\"},"
+                "{\"key\":\"loopC_speed\",\"label\":\"C\"},"
+                "{\"key\":\"loopD_speed\",\"label\":\"D\"},"
+                "{\"level\":\"sound\",\"label\":\"Sound\"},"
+                "{\"level\":\"loopA\",\"label\":\"Loop A\"},"
+                "{\"level\":\"loopB\",\"label\":\"Loop B\"},"
+                "{\"level\":\"loopC\",\"label\":\"Loop C\"},"
+                "{\"level\":\"loopD\",\"label\":\"Loop D\"}]}"
+              /* Sound: level on the top row, tone underneath, so each
+               * memory reads as a column — how loud it is, and what is
+               * left of it. Speed moved to Main, under the transport it
+               * belongs with. Sits between Main and the loop pages because
+               * the nav entries in root's "params" are what the planner
+               * walks to order the bank. */
+              ",\"sound\":{\"label\":\"Sound\",\"knobs\":["
+                "\"loopA_volume\",\"loopB_volume\","
+                "\"loopC_volume\",\"loopD_volume\","
                 "\"loopA_tone\",\"loopB_tone\","
                 "\"loopC_tone\",\"loopD_tone\"]}");
         for (int i = 0; i < NUM_LOOPS; i++) {
             char c = LOOP_LETTERS[i];
             pos += snprintf(json + pos, sizeof(json) - pos,
-                ",\"loop%c\":{\"label\":\"%c\",\"knobs\":["
+                ",\"loop%c\":{\"label\":\"Loop %c\",\"knobs\":["
                   "\"loop%c_decay_rate\",\"loop%c_send\",\"loop%c_state\",\"loop%c_erase\","
                   "\"loop%c_wow\",\"loop%c_hf_loss\",\"loop%c_chaos\",\"loop%c_hiss\"]}",
                 c, c, c, c, c, c, c, c, c, c);

@@ -387,9 +387,11 @@ int main(void) {
          * array (see forgetful.c's ui_hierarchy comment). */
         check(strstr(hier, "\"root\":{") != NULL, "test0: ui_hierarchy has a root level");
         static const char *level_keys[] = { "loopA", "loopB", "loopC", "loopD" };
-        static const char *level_labels[] = { "A", "B", "C", "D" };
+        static const char *level_labels[] = { "Loop A", "Loop B", "Loop C", "Loop D" };
         for (size_t i = 0; i < 4; i++) {
-            /* Labels are just the loop letter now (2026-08-25, trimmed from
+            /* "Loop A".."Loop D" since 2026-08-27 — the bare letter read as
+             * ambiguous next to the letters labelling per-memory COLUMNS on
+             * Main and Sound. (2026-08-25, trimmed from
              * "Loop A" etc.) — probe the level's OWN declaration
              * ("loopA":{"label":"A"...) rather than a bare "label":"A",
              * which loopA_volume's identically-renamed label would also
@@ -399,8 +401,8 @@ int main(void) {
         }
         /* Main's top row is Route/Status/Rec/Freeze; its bottom row is
          * deliberately empty since the volumes moved to the Mixer page. */
-        check(strstr(hier, "\"master_loops_overview\",\"master_record\",\"master_freeze\",\"loopA_volume\"") != NULL,
-              "test0: Main is Route/Status/Rec/Freeze over the four volumes");
+        check(strstr(hier, "\"master_loops_overview\",\"master_record\",\"master_freeze\",\"loopA_speed\"") != NULL,
+              "test0: Main is Route/Status/Rec/Freeze over the four speeds");
 
         /* every expected key, in both blobs */
         static const char *master_keys[] = {
@@ -1648,18 +1650,22 @@ int main(void) {
         check(inst != NULL, "test26: create_instance");
         static char js[16384];
         int n = api->get_param(inst, "ui_hierarchy", js, sizeof(js));
-        check(n > 0 && strstr(js, "\"distance\"") != NULL, "test26: a distance level exists");
-        const char *d = strstr(js, "{\"level\":\"distance\"");
+        check(n > 0 && strstr(js, "\"sound\"") != NULL, "test26: a sound level exists");
+        const char *d = strstr(js, "{\"level\":\"sound\"");
         const char *a = strstr(js, "{\"level\":\"loopA\"");
-        check(d && a && d < a, "test26: Distance sits between Main and the memory pages");
-        check(strstr(js, "\"loopA_speed\",\"loopB_speed\"") != NULL,
-              "test26: Distance carries the four speeds");
+        check(d && a && d < a, "test26: Sound sits between Main and the loop pages");
+        check(strstr(js, "\"master_freeze\",\"loopA_speed\"") != NULL,
+              "test26: the speeds are Main's bottom row");
+        check(strstr(js, "\"loopA_volume\",\"loopB_volume\",\"loopC_volume\",\"loopD_volume\","
+                         "\"loopA_tone\"") != NULL,
+              "test26: Sound is the levels over the tones");
+        check(strstr(js, "\"label\":\"Loop A\"") != NULL,
+              "test26: the loop pages are named Loop A..D");
         check(strstr(js, "\"loopA_decay_rate\",\"loopA_send\"") != NULL,
               "test26: the reverb send took Drive's slot on the memory page");
         check(strstr(js, "loopA_saturation") == NULL,
               "test26: Drive is gone from the hierarchy");
-        check(strstr(js, "\"master_freeze\",\"loopA_volume\"") != NULL,
-              "test26: the volumes are back on Main");
+
 
         /* "1x" must not read back as a division: atoi("1x") is 1, so an
          * index-only parse selects the wrong option. */
