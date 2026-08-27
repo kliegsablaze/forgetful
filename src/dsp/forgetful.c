@@ -274,6 +274,22 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * decays at all). */
 #define REVERB_NUM_COMBS     4
 #define REVERB_NUM_ALLPASS   2
+#define DARKEN_DAMPING       0.55f /* comb damping at full wet — how dark the
+                                    * wash goes. Was 0.4; raised 2026-08-27
+                                    * with the age curve, since "Darken" at
+                                    * maximum should be genuinely hard to
+                                    * pick the source out of. */
+#define DARKEN_AGE_FULL      0.50f /* Darken reaches its knob setting by the
+                                    * time the take is this far gone, not at
+                                    * memory==0. Scaling it by raw `age`
+                                    * meant full wet arrived exactly as the
+                                    * loop vanished, so the knob's top half
+                                    * was never actually audible — reported
+                                    * 2026-08-27 as Darken not being
+                                    * pronounced enough at maximum. Reaching
+                                    * the destination half way also leaves a
+                                    * long plateau of full wash, which is
+                                    * the part that sounds like the record. */
 #define REVERB_FEEDBACK_MIN  0.70f
 #define REVERB_FEEDBACK_MAX  0.98f
 
@@ -920,8 +936,9 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * all driven by the SAME applied_hf_loss chase value, so
                  * presence/darkness/length build together off one knob.
                  * wet_amount=0 is an exact raw_l/raw_r passthrough. */
-                float wet_amount = clampf(loop->applied_hf_loss, 0.0f, 1.0f) * age;
-                float damp1 = wet_amount * 0.4f;
+                float darken_age = clampf(age / DARKEN_AGE_FULL, 0.0f, 1.0f);
+                float wet_amount = clampf(loop->applied_hf_loss, 0.0f, 1.0f) * darken_age;
+                float damp1 = wet_amount * DARKEN_DAMPING;
                 float damp2 = 1.0f - damp1;
                 float feedback = REVERB_FEEDBACK_MIN + wet_amount * (REVERB_FEEDBACK_MAX - REVERB_FEEDBACK_MIN);
                 float rev_input = (raw_l + raw_r) * 0.5f;

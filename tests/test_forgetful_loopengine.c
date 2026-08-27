@@ -1443,6 +1443,61 @@ int main(void) {
         api->destroy_instance(inst);
     }
 
+    /* ---------------------------------------------------------------
+     * test21: Darken at maximum is a WALL, and gets there while you can
+     * still hear the loop. Scaling wet mix by raw `age` put full wet at
+     * memory==0 — the exact moment the take vanishes — so the knob's top
+     * half was never audible (reported 2026-08-27). DARKEN_AGE_FULL brings
+     * it in by the time the take is half gone.
+     * --------------------------------------------------------------- */
+    {
+        int32_t rms_dry = 0, rms_wet = 0;
+        for (int pass = 0; pass < 2; pass++) {
+            void *inst = api->create_instance(".", NULL);
+            check(inst != NULL, "test21: create_instance");
+            api->set_param(inst, "loopA_decay_rate", "30");
+            /* A TONE, not the DC constant the other tests use: DC through a
+             * 0.98-feedback comb has a gain of ~1/(1-fb), so a DC take reads
+             * as "louder than dry" at ANY wet fraction and cannot tell full
+             * wet from half wet. */
+            float phase = 0.0f;
+            record_full_buffer_loop_a(api, inst, &phase);
+            api->set_param(inst, "loopA_hiss", "0");
+            api->set_param(inst, "loopA_chaos", "0");
+            api->set_param(inst, "loopA_wow", "0");
+            api->set_param(inst, "loopA_saturation", "0");
+            api->set_param(inst, "loopA_volume", "1");
+            /* half gone: age == 0.5, which is DARKEN_AGE_FULL */
+            run_silence(api, inst, (long)SAMPLE_RATE * 15);
+            api->set_param(inst, "loopA_hf_loss", pass == 0 ? "0" : "1");
+            run_silence(api, inst, (long)SAMPLE_RATE / 2);
+
+            int16_t buf[BLOCK_FRAMES * 2];
+            double tot = 0.0; long n = 0;
+            for (int b = 0; b < 80; b++) {
+                fill_silence(buf, BLOCK_FRAMES);
+                api->process_block(inst, buf, BLOCK_FRAMES);
+                for (int i = 0; i < BLOCK_FRAMES * 2; i += 2) {
+                    tot += (double)buf[i] * (double)buf[i];
+                    n++;
+                }
+            }
+            int32_t r = (int32_t)sqrt(tot / (double)n);
+            if (pass == 0) rms_dry = r; else rms_wet = r;
+            api->destroy_instance(inst);
+        }
+        /* Under the old raw-`age` scaling this was HALF wet at this point
+         * and measured quieter than dry, so the ratio was below 1. */
+        check(rms_wet > rms_dry * 5 / 4,
+              "test21: Darken at maximum on a half-decayed take is a wall — "
+              "louder and denser than the same take undarkened (measures "
+              "~1.44x). Under raw age-scaling this was ~0.22x: half wet, and "
+              "the wash it faded toward was quieter than the signal it "
+              "replaced, so the knob dug a HOLE rather than building a wall "
+              "— which is what 'not pronounced enough' actually was.");
+
+    }
+
     if (g_failures > 0) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;
