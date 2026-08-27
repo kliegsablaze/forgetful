@@ -259,7 +259,6 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * comment) — ~1kHz-ish corner, low enough to strip the noise's rumble,
  * high enough to keep it sounding like noise rather than a whistle. */
 #define HISS_COLOR_COEFF       0.15f
-#define SATURATION_MAX_DRIVE  9.0f
 
 /* VINYL — replaces the old "Glitch" chaos-gate (a dropout mute) entirely:
  * a vinyl-sim crackle (SP-404-style) rather than a tape glitch. Modeled as
@@ -359,7 +358,15 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * The threshold rises with age, so it keeps finding new material to eat
  * instead of converging after one pass. Soft-kneed (a squared ratio)
  * rather than switched, so nothing clicks. */
-#define GATE_MAX_THRESHOLD    0.35f
+#define GATE_MAX_THRESHOLD    0.30f
+/* How much of a frame a single pass may remove. Without a floor the gain
+ * goes straight to zero the moment a frame is under threshold, and since
+ * the write-back is destructive that frame is gone for good after ONE
+ * pass — reported as dropouts arriving "very large very early", with the
+ * take replaced by its own hiss and crackle. At 0.78 a frame needs about
+ * fourteen passes to lose 90% of itself, so material thins out instead of
+ * being cut, and the loop is still recognisable while it goes. */
+#define GATE_MIN_PER_PASS     0.85f
 #define GATE_ENV_ATTACK_S     0.003f
 #define GATE_ENV_RELEASE_S    0.120f
 
@@ -496,6 +503,72 @@ static inline float reverb_allpass_process(reverb_allpass_t *a, float input) {
 #define FDN_MOD_SAMPLES  6.0f
 #define FDN_INPUT_DIFFUSERS 4
 
+/* A peak limiter: follow the magnitude, and divide down whenever that
+ * follower is over the threshold. Feed-forward and gain-only, so it never
+ * adds anything, and one instance is shared by the send tank's input and
+ * the module's own output. */
+typedef struct { float env, att, rel; } limiter_t;
+
+static void limiter_init(limiter_t *L, float attack_s, float release_s) {
+    L->env = 0.0f;
+    L->att = 1.0f - expf(-1.0f / (attack_s  * SAMPLE_RATE));
+    L->rel = 1.0f - expf(-1.0f / (release_s * SAMPLE_RATE));
+}
+
+static inline float limiter_gain(limiter_t *L, float mag, float threshold) {
+    L->env += (mag > L->env ? L->att : L->rel) * (mag - L->env);
+    return (L->env > threshold) ? threshold / L->env : 1.0f;
+}
+
+/* Transparent below the knee, asymptotic to 1.0 above it. An x/(1+|x|)
+ * curve would bound correctly but costs 3.5dB at half scale, colouring
+ * everything; this one only bends the top. */
+static inline float softclip(float x, float knee) {
+    float a = fabsf(x);
+    if (a <= knee) return x;
+    float over = a - knee;
+    float lim = knee + over / (1.0f + over / (1.0f - knee));
+    return x < 0.0f ? -lim : lim;
+}
+
+/* ---- Keeping the tank out of trouble ---------------------------------
+ * What goes into a send is not a mixed record, it is four decaying tape
+ * loops plus whatever VINYL's gate edges, crackle and accumulated hiss
+ * have made of them. Those artefacts are transient and can be far hotter
+ * than the material around them, and a 6.6s tank turns one spike into six
+ * seconds of loud.
+ *
+ * So the limiting goes on the INPUT, before the energy is stored. Fixing
+ * it at the output instead means the tank still holds the spike and the
+ * limiter has to hold gain down for the whole tail, which pumps audibly.
+ * Fast enough to catch a click, slow enough to release without chattering.
+ *
+ * The output soft-clip is a backstop, not the mechanism: it only has
+ * anything to do if several memories peak together.
+ * --------------------------------------------------------------------- */
+/* The tank's internal gain is well above unity — eight lines summed, fed
+ * back at FDN_DECAY — so without this a fully-sent memory returns a
+ * reverb roughly twice as loud as itself, and the limiter ends up being
+ * the operating point rather than a ceiling. Sized so send=100% comes
+ * back at about half the source. */
+/* ---- The module's own output ----------------------------------------
+ * The loops get loud on their own as they degrade, before the reverb is
+ * involved at all: the medium regulator holds each take at its recorded
+ * level, VINYL's gate leaves peaks standing while removing everything
+ * around them, and four of those sum. Limiting only the send left that
+ * untouched. This one sits across the module's whole contribution, dry
+ * loops and reverb together, and never touches the input passing through.
+ * Stereo-linked off the larger channel, so it cannot wander the image. */
+#define OUT_LIMIT_THRESHOLD  0.80f
+#define OUT_LIMIT_ATTACK_S   0.002f
+#define OUT_LIMIT_RELEASE_S  0.300f
+#define OUT_CLIP_KNEE        0.90f
+
+#define FDN_OUTPUT_GAIN      0.12f
+#define FDN_LIMIT_THRESHOLD  0.45f
+#define FDN_LIMIT_ATTACK_S   0.002f
+#define FDN_LIMIT_RELEASE_S  0.250f
+
 static const int fdn_line_len[FDN_LINES] =
     { 1567, 1789, 2003, 2251, 2503, 2777, 3011, 3299 };
 static const int fdn_diffuser_len[FDN_INPUT_DIFFUSERS] = { 211, 159, 563, 411 };
@@ -509,6 +582,7 @@ typedef struct {
     int    pre_idx;
     float  mod_phase;
     float  mod_off[FDN_LINES];   /* per block */
+    limiter_t lim;               /* on the way IN, see FDN_LIMIT_THRESHOLD */
 } fdn_t;
 
 static void fdn_free(fdn_t *f) {
@@ -543,6 +617,7 @@ static void fdn_clear(fdn_t *f) {
     }
     memset(f->predelay, 0, sizeof(float) * FDN_PREDELAY);
     f->pre_idx = 0; f->mod_phase = 0.0f;
+    limiter_init(&f->lim, FDN_LIMIT_ATTACK_S, FDN_LIMIT_RELEASE_S);
 }
 
 /* once per block — see the modulation note above */
@@ -565,7 +640,12 @@ static inline void hadamard8(float *v) {
     }
 }
 
+#define FDN_CLIP_KNEE 0.70f
+
 static inline void fdn_process(fdn_t *f, float in, float *out_l, float *out_r) {
+    /* Limit BEFORE the tank — see FDN_LIMIT_THRESHOLD. */
+    in *= limiter_gain(&f->lim, fabsf(in), FDN_LIMIT_THRESHOLD);
+
     /* pre-delay, then diffusion */
     float pre = f->predelay[f->pre_idx];
     f->predelay[f->pre_idx] = in;
@@ -590,8 +670,10 @@ static inline void fdn_process(fdn_t *f, float in, float *out_l, float *out_r) {
     }
 
     /* stereo taps BEFORE the mix, so the two sides are decorrelated */
-    *out_l = (v[0] - v[1] + v[2] - v[3]) * 0.5f;
-    *out_r = (v[4] - v[5] + v[6] - v[7]) * 0.5f;
+    float ol = (v[0] - v[1] + v[2] - v[3]) * 0.5f;
+    float orr = (v[4] - v[5] + v[6] - v[7]) * 0.5f;
+    *out_l = softclip(ol * FDN_OUTPUT_GAIN, FDN_CLIP_KNEE);
+    *out_r = softclip(orr * FDN_OUTPUT_GAIN, FDN_CLIP_KNEE);
 
     hadamard8(v);
     const float norm = FDN_DECAY * 0.35355339f;   /* 1/sqrt(8) keeps it orthogonal */
@@ -669,13 +751,11 @@ typedef struct {
      * C name and algorithm behind it are now VINYL crackle, not the old
      * chaos-gate dropout (see CRACKLE_DUST_MAX_PROB). */
     float decay_rate;
-    float saturation;
     /* Drive's own one-off glide step, used ONLY while frozen (see
      * FROZEN_GLIDE_SECONDS and loop_set_param's "saturation" branch) — set
      * fresh on every frozen write. Drive has no flavor_ramp_t to hold this
      * (it stays the plain v1 auto-chase knob when unfrozen), so it gets its
      * own single field rather than a whole struct for one number. */
-    float saturation_glide_step;
 
     flavor_ramp_t wow_ramp;
     flavor_ramp_t hf_loss_ramp;
@@ -687,7 +767,7 @@ typedef struct {
      * chases this toward `saturation` at a constant rate every sample (see
      * the LOOPING case); the other four are advanced by chase() using their
      * own flavor_ramp_t's `.step`, which only changes on a set_param write. */
-    float applied_wow, applied_hf_loss, applied_hiss, applied_saturation, applied_crackle;
+    float applied_wow, applied_hf_loss, applied_hiss, applied_crackle;
 
     /* buffer & playback */
     frame16_t *buffer;
@@ -720,12 +800,13 @@ typedef struct {
     int   warp_drift_countdown;
     float hiss_lp_l, hiss_lp_r;  /* hiss-coloring filter state, see HISS_COLOR_COEFF */
     float crackle_env;  /* VINYL click/pop envelope, see CRACKLE_DUST_MAX_PROB */
-    int   speed_div;   /* 1, 2 or 4: read the tape at 1/N rate, so the loop
-                        * drops N octaves and takes N times as long to come
-                        * round. Applied as a multiplier ON TOP of Warp's
-                        * modulation rather than replacing it, so the two
-                        * compose. A slowed memory also disintegrates
-                        * slower, since the damage is per pass. */
+    float speed_mul;   /* 0.25 / 0.5 / 1 / 2: read rate, so the loop shifts
+                        * by octaves and its pass takes proportionally
+                        * longer or shorter. Applied as a multiplier ON TOP
+                        * of Warp's modulation rather than replacing it, so
+                        * the two compose. Note a slowed memory also
+                        * disintegrates slower and a doubled one faster,
+                        * since the damage is per pass, not per second. */
     int   frozen;  /* master_freeze: memory stops draining, loop keeps
                     * playing at whatever character it already reached */
     int   overdubbing;  /* master_record's second toggle while LOOPING (not
@@ -839,6 +920,7 @@ typedef struct {
     float loop_volume[NUM_LOOPS];
     float loop_send[NUM_LOOPS];   /* post-fader send into the FDN */
     fdn_t send_reverb;
+    limiter_t out_lim;
 } inst_t;
 
 /* ---- small helpers ---- */
@@ -938,7 +1020,6 @@ static void reset_take(loop_engine_t *loop) {
     loop->gate_env = 0.0f;
     loop->warp_drift = loop->warp_drift_target = 0.0f;
     loop->warp_drift_countdown = 0;
-    loop->saturation_glide_step = 0.0f;
     reverb_clear(&loop->wash);
 }
 
@@ -1022,7 +1103,6 @@ static void close_recording(loop_engine_t *loop) {
     loop->medium_gain   = 1.0f;
     loop->warp_drift = loop->warp_drift_target = 0.0f;
     loop->warp_drift_countdown = 0;
-    loop->saturation_glide_step = 0.0f;
     loop->hiss_lp_l = loop->hiss_lp_r = 0.0f;
     loop->crackle_env = 0.0f;
     loop->frozen = 0;
@@ -1046,14 +1126,14 @@ static void close_recording(loop_engine_t *loop) {
 
 static void init_loop(loop_engine_t *loop, uint32_t rng_seed) {
     memset(loop, 0, sizeof(*loop));
+    /* MUST come after the memset: zero here means a read rate of zero and
+     * no loop ever plays at all. */
+    loop->speed_mul = 1.0f;
     /* Age starts FULL (300s, the max — was 180s/3min); Warp/Darken/Hiss/
      * VINYL start at minimum, UNTOUCHED (flavor_ramp_t's zeroed target/step/
      * touched from the memset above is exactly that — nothing to set here).
-     * Drive (saturation) is the one flavor knob that keeps a nonzero
-     * baseline default, since it's still the v1 auto-chase-from-0 knob, not
-     * a v2 ramp — see the flavor timing model v2 comment. */
+     * Drive is gone; its knob is the reverb send now. */
     loop->decay_rate = 300.0f;
-    loop->saturation = 0.25f;
     loop->erase_fade_gain = 1.0f;
     loop->forgotten_at          = TIME_NOT_SET;
     loop->rng_state = rng_seed;
@@ -1096,6 +1176,7 @@ static void *v2_create_instance(const char *dir, const char *cfg) {
         return NULL;
     }
     fdn_clear(&s->send_reverb);
+    limiter_init(&s->out_lim, OUT_LIMIT_ATTACK_S, OUT_LIMIT_RELEASE_S);
 
     s->input_routing = ROUTE_A;  /* default — no OFF state to start unrouted in */
 
@@ -1135,8 +1216,11 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
         float age = 1.0f - clampf(loop->memory, 0.0f, 1.0f);
 
         loop->warp_amt = flavour_reach(loop->applied_wow, age);
+        /* age SQUARED: linear made the gate bite hard while the take was
+         * still nearly intact. Squared, the first third of a take's life
+         * is essentially untouched and the erosion arrives later. */
         loop->gate_thresh = clampf(loop->applied_crackle, 0.0f, 1.0f) *
-                            GATE_MAX_THRESHOLD * age;
+                            GATE_MAX_THRESHOLD * age * age;
         loop->gate_a       = 1.0f - expf(-1.0f / (GATE_ENV_ATTACK_S  * SAMPLE_RATE));
         loop->gate_r_coef  = 1.0f - expf(-1.0f / (GATE_ENV_RELEASE_S * SAMPLE_RATE));
         loop->medium_level_a = 1.0f - expf(-1.0f / (MEDIUM_LEVEL_TAU_S * SAMPLE_RATE));
@@ -1155,7 +1239,6 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
         }
         loop->medium_active = (loop->applied_hf_loss    > 0.001f) ||
                               (loop->applied_hiss       > 0.001f) ||
-                              (loop->applied_saturation > 0.001f) ||
                               (loop->applied_crackle    > 0.001f);
 
         float d = flavour_reach(loop->applied_hf_loss, age);
@@ -1247,7 +1330,7 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                              loop->warp_drift * DRIFT_MOD_DEPTH) * w +
                             sinf(loop->flutter_phase) * FLUTTER_MOD_DEPTH * w * w;
                 double speed = 1.0 + mod;
-                if (loop->speed_div > 1) speed /= (double)loop->speed_div;
+                speed *= (double)loop->speed_mul;
 
                 loop->wow_phase += 2.0f * PI_F * WOW_RATE_HZ / SAMPLE_RATE;
                 if (loop->wow_phase >= 2.0f * PI_F) loop->wow_phase -= 2.0f * PI_F;
@@ -1364,20 +1447,10 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 }
                 float filt_l = dark_l, filt_r = dark_r;
 
-                /* 2. Saturation (Warmth) — crossfade between the dry
-                 * (filtered) signal and a FIXED full-drive tanh curve,
-                 * scaled by sat_amount, rather than modulating drive itself.
-                 * Modulating drive left a floor at drive=1 when sat_amount
-                 * was 0, and tanh(x)/tanh(1) is not identity. The crossfade
-                 * makes sat_amount=0 an exact filt_l/filt_r passthrough
-                 * while sat_amount=1 reproduces the previous full-drive
-                 * behavior unchanged. */
-                float sat_amount = clampf(loop->applied_saturation, 0.0f, 1.0f);
-                float drive = 1.0f + SATURATION_MAX_DRIVE;
-                float driven_l = tanhf(filt_l * drive) / tanhf(drive);
-                float driven_r = tanhf(filt_r * drive) / tanhf(drive);
-                float sat_l = filt_l + (driven_l - filt_l) * sat_amount;
-                float sat_r = filt_r + (driven_r - filt_r) * sat_amount;
+                /* Drive is gone (2026-08-27). Its tanh stage sat between
+                 * Darken and Hiss; the medium's own recursion supplies the
+                 * grit it used to, and its knob is now the reverb send. */
+                float sat_l = filt_l, sat_r = filt_r;
 
                 /* 3. Hiss — highpassed, not raw broadband noise. Reported
                  * from hardware 2026-08-25 as "just sounds like white
@@ -1465,6 +1538,7 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                     float ratio = loop->gate_env / loop->gate_thresh;
                     float g = ratio * ratio;          /* soft knee, no switching */
                     if (g > 1.0f) g = 1.0f;
+                    if (g < GATE_MIN_PER_PASS) g = GATE_MIN_PER_PASS;
                     med_l *= g; med_r *= g;
                 }
 
@@ -1578,9 +1652,7 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                     if (!loop->frozen) {
                         float step = 1.0f / (loop->decay_rate * SAMPLE_RATE);
                         loop->memory -= step;
-                        loop->applied_saturation = chase(loop->applied_saturation, loop->saturation, step);
                     } else {
-                        loop->applied_saturation = chase(loop->applied_saturation, loop->saturation, loop->saturation_glide_step);
                     }
                     loop->applied_wow     = chase(loop->applied_wow,     loop->wow_ramp.target,     loop->wow_ramp.step);
                     loop->applied_hf_loss = chase(loop->applied_hf_loss, loop->hf_loss_ramp.target, loop->hf_loss_ramp.step);
@@ -1646,6 +1718,13 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
             wet_total_r += rr;
         }
 
+        {
+            float ml = fabsf(wet_total_l) > fabsf(wet_total_r)
+                     ? fabsf(wet_total_l) : fabsf(wet_total_r);
+            float g = limiter_gain(&s->out_lim, ml, OUT_LIMIT_THRESHOLD);
+            wet_total_l = softclip(wet_total_l * g, OUT_CLIP_KNEE);
+            wet_total_r = softclip(wet_total_r * g, OUT_CLIP_KNEE);
+        }
         lr[i * 2]     = mix_dry_wet(raw_dry_l, wet_total_l);
         lr[i * 2 + 1] = mix_dry_wet(raw_dry_r, wet_total_r);
     }
@@ -1798,18 +1877,6 @@ static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *
         flavor_ramp_set_param(&loop->hf_loss_ramp, &loop->applied_hf_loss, (float)atof(val), loop->memory, loop->decay_rate, loop->frozen);
     } else if (strcmp(suffix, "hiss") == 0) {
         flavor_ramp_set_param(&loop->hiss_ramp, &loop->applied_hiss, (float)atof(val), loop->memory, loop->decay_rate, loop->frozen);
-    } else if (strcmp(suffix, "saturation") == 0) {
-        /* Drive isn't a flavor_ramp_t (still the v1 auto-chase knob — see
-         * the struct comment), but while frozen it gets the same short-glide
-         * treatment as the other four (FROZEN_GLIDE_SECONDS), via its own
-         * one-off `saturation_glide_step` — the LOOPING case's per-sample
-         * update reads this instead of the normal decay_rate-derived rate
-         * whenever the loop is frozen. */
-        loop->saturation = clampf((float)atof(val), 0.0f, 1.0f);
-        if (loop->frozen) {
-            float glide_samples = FROZEN_GLIDE_SECONDS * (float)SAMPLE_RATE;
-            loop->saturation_glide_step = fabsf(loop->saturation - loop->applied_saturation) / glide_samples;
-        }
     } else if (strcmp(suffix, "chaos") == 0) {
         /* wire key stays "chaos" (see the crackle field comment on
          * loop_engine_t) — this is VINYL's live value. */
@@ -1818,12 +1885,15 @@ static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *
         /* The option STRINGS are matched before any index fallback,
          * because atoi("1x") is 1 — the normal-speed spelling would
          * otherwise select the second option. */
-        if (strcmp(val, "1/2") == 0)      loop->speed_div = 2;
-        else if (strcmp(val, "1/4") == 0) loop->speed_div = 4;
-        else if (strcmp(val, "1x") == 0)  loop->speed_div = 1;
+        if (strcmp(val, "1/4") == 0)      loop->speed_mul = 0.25f;
+        else if (strcmp(val, "1/2") == 0) loop->speed_mul = 0.5f;
+        else if (strcmp(val, "1x") == 0)  loop->speed_mul = 1.0f;
+        else if (strcmp(val, "2x") == 0)  loop->speed_mul = 2.0f;
         else {
+            /* index fallback, in the declared option order */
+            static const float by_index[4] = { 0.25f, 0.5f, 1.0f, 2.0f };
             int ix = atoi(val);
-            loop->speed_div = (ix == 2) ? 4 : (ix == 1) ? 2 : 1;
+            loop->speed_mul = by_index[(ix < 0) ? 0 : (ix > 3) ? 3 : ix];
         }
         return;
     } else if (strcmp(suffix, "erase") == 0) {
@@ -1862,13 +1932,13 @@ static int loop_get_param(const loop_engine_t *loop, uint64_t total_frames, cons
     if (strcmp(suffix, "wow") == 0)         return snprintf(buf, len, "%.3f", loop->wow_ramp.target);
     if (strcmp(suffix, "hf_loss") == 0)     return snprintf(buf, len, "%.3f", loop->hf_loss_ramp.target);
     if (strcmp(suffix, "hiss") == 0)        return snprintf(buf, len, "%.3f", loop->hiss_ramp.target);
-    if (strcmp(suffix, "saturation") == 0)  return snprintf(buf, len, "%.3f", loop->saturation);
     if (strcmp(suffix, "chaos") == 0)       return snprintf(buf, len, "%.3f", loop->crackle_ramp.target);
     if (strcmp(suffix, "speed") == 0) {
         /* Names the CURRENT state, like Freeze — it is a setting you can
          * see rather than an action, and four of them sit side by side. */
-        return snprintf(buf, len, loop->speed_div == 4 ? "1/4"
-                                : loop->speed_div == 2 ? "1/2" : "1x");
+        return snprintf(buf, len, loop->speed_mul <= 0.3f  ? "1/4"
+                                : loop->speed_mul <= 0.6f  ? "1/2"
+                                : loop->speed_mul >= 1.5f  ? "2x" : "1x");
     }
     if (strcmp(suffix, "erase") == 0) {
         /* "ERASE" at rest (2026-08-25, was always "-"), "ERASING n" while
@@ -1937,13 +2007,12 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
             if (json_get_float(val, key_buf, &v) == 0) s->loops[i].hf_loss_ramp.target = clampf(v, 0.0f, 1.0f);
             snprintf(key_buf, sizeof(key_buf), "loop%c_hiss", LOOP_LETTERS[i]);
             if (json_get_float(val, key_buf, &v) == 0) s->loops[i].hiss_ramp.target = clampf(v, 0.0f, 1.0f);
-            snprintf(key_buf, sizeof(key_buf), "loop%c_saturation", LOOP_LETTERS[i]);
-            if (json_get_float(val, key_buf, &v) == 0) s->loops[i].saturation = clampf(v, 0.0f, 1.0f);
             snprintf(key_buf, sizeof(key_buf), "loop%c_chaos", LOOP_LETTERS[i]);
             if (json_get_float(val, key_buf, &v) == 0) s->loops[i].crackle_ramp.target = clampf(v, 0.0f, 1.0f);
             snprintf(key_buf, sizeof(key_buf), "loop%c_speed", LOOP_LETTERS[i]);
             if (json_get_float(val, key_buf, &v) == 0)
-                s->loops[i].speed_div = (v >= 4.0f) ? 4 : (v >= 2.0f) ? 2 : 1;
+                s->loops[i].speed_mul = (v <= 0.3f) ? 0.25f : (v <= 0.6f) ? 0.5f
+                                      : (v >= 1.5f) ? 2.0f : 1.0f;
         }
         return;
     }
@@ -2120,12 +2189,12 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
             const loop_engine_t *loop = &s->loops[i];
             pos += snprintf(json + pos, sizeof(json) - pos,
                 ",\"loop%c_decay_rate\":%.4f,\"loop%c_wow\":%.4f,\"loop%c_hf_loss\":%.4f,"
-                "\"loop%c_hiss\":%.4f,\"loop%c_saturation\":%.4f,\"loop%c_chaos\":%.4f,"
-                "\"loop%c_speed\":%d",
+                "\"loop%c_hiss\":%.4f,\"loop%c_chaos\":%.4f,"
+                "\"loop%c_speed\":%.4f",
                 LOOP_LETTERS[i], loop->decay_rate, LOOP_LETTERS[i], loop->wow_ramp.target,
                 LOOP_LETTERS[i], loop->hf_loss_ramp.target, LOOP_LETTERS[i], loop->hiss_ramp.target,
-                LOOP_LETTERS[i], loop->saturation, LOOP_LETTERS[i], loop->crackle_ramp.target,
-                LOOP_LETTERS[i], loop->speed_div);
+                LOOP_LETTERS[i], loop->crackle_ramp.target,
+                LOOP_LETTERS[i], (double)loop->speed_mul);
         }
         pos += snprintf(json + pos, sizeof(json) - pos, "}");
         if (pos >= (int)sizeof(json) || pos >= len) return -1;
@@ -2145,12 +2214,9 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                   "\"min\":0,\"max\":1,\"default\":%.2f,\"step\":0.01,\"unit\":\"%%\","
                   "\"display_format\":\"%%.0f\"}"
                 ",{\"key\":\"loop%c_speed\",\"name\":\"%c\",\"type\":\"enum\","
-                  "\"options\":[\"1x\",\"1/2\",\"1/4\"]}"
-                ",{\"key\":\"loop%c_send\",\"name\":\"%c\",\"type\":\"float\","
-                  "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01,\"unit\":\"%%\","
-                  "\"display_format\":\"%%.0f\"}",
+                  "\"options\":[\"1/4\",\"1/2\",\"1x\",\"2x\"],\"default\":\"1x\"}"
+,
                 LOOP_LETTERS[i], LOOP_LETTERS[i], (double)DEFAULT_LOOP_VOLUME,
-                LOOP_LETTERS[i], LOOP_LETTERS[i],
                 LOOP_LETTERS[i], LOOP_LETTERS[i]);
         }
         /* "enum", not "string": a read-only string routes through the opaque
@@ -2202,8 +2268,9 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                  * still the v1 auto-chase knob, not a v2 ramp. */
                 ",{\"key\":\"loop%c_decay_rate\",\"name\":\"Age\",\"type\":\"float\","
                   "\"min\":3,\"max\":300,\"default\":300,\"step\":1,\"unit\":\"s\"}"
-                ",{\"key\":\"loop%c_saturation\",\"name\":\"Drive\",\"type\":\"float\","
-                  "\"min\":0,\"max\":1,\"default\":0.25,\"step\":0.01}"
+                ",{\"key\":\"loop%c_send\",\"name\":\"Space\",\"type\":\"float\","
+                  "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01,\"unit\":\"%%\","
+                  "\"display_format\":\"%%.0f\"}"
                 /* Was an inert "reserved" placeholder, now the loop's own
                  * single-character state readout — '-'/R/digit, same code
                  * and meaning as ECHO's per-loop character on Master.
@@ -2286,13 +2353,12 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
               ",\"distance\":{\"label\":\"Distance\",\"knobs\":["
                 "\"loopA_speed\",\"loopB_speed\","
                 "\"loopC_speed\",\"loopD_speed\","
-                "\"loopA_send\",\"loopB_send\","
-                "\"loopC_send\",\"loopD_send\"]}");
+                "\"\",\"\",\"\",\"\"]}");
         for (int i = 0; i < NUM_LOOPS; i++) {
             char c = LOOP_LETTERS[i];
             pos += snprintf(json + pos, sizeof(json) - pos,
                 ",\"loop%c\":{\"label\":\"%c\",\"knobs\":["
-                  "\"loop%c_decay_rate\",\"loop%c_saturation\",\"loop%c_state\",\"loop%c_erase\","
+                  "\"loop%c_decay_rate\",\"loop%c_send\",\"loop%c_state\",\"loop%c_erase\","
                   "\"loop%c_wow\",\"loop%c_hf_loss\",\"loop%c_chaos\",\"loop%c_hiss\"]}",
                 c, c, c, c, c, c, c, c, c, c);
         }

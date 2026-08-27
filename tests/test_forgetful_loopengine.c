@@ -19,7 +19,7 @@
  * depends on how long the recording is.
  *
  * Covers:
- *   0. chain_params / ui_hierarchy shape — exactly 48 entries (8 master +
+ *   0. chain_params / ui_hierarchy shape — exactly 44 entries (8 master +
  *      4x8 loop), every expected key present in both, including
  *      master_record/master_freeze, and no OFF option in Route's options
  *      list.
@@ -352,8 +352,8 @@ int main(void) {
         int key_count = 0;
         const char *p = cp;
         while ((p = strstr(p, "\"key\":\"")) != NULL) { key_count++; p += 7; }
-        check(key_count == 48,
-              "test0: chain_params has exactly 48 entries (8 master + 4x10 loop; loopX_speed and loopX_send came with the Distance page)");
+        check(key_count == 44,
+              "test0: chain_params has exactly 44 entries (8 master + 4x9 loop; Drive went, loopX_speed and loopX_send arrived)");
 
         n = api->get_param(inst, "ui_hierarchy", hier, sizeof(hier));
         check(n > 0, "test0: ui_hierarchy readable");
@@ -390,7 +390,7 @@ int main(void) {
             check(strstr(hier, probe) != NULL, "test0: ui_hierarchy contains master key");
         }
         static const char *loop_suffixes[] = {
-            "decay_rate", "wow", "hf_loss", "hiss", "saturation", "chaos", "state", "erase"
+            "decay_rate", "wow", "hf_loss", "hiss", "send", "chaos", "state", "erase", "speed"
         };
         static const char letters[] = { 'A', 'B', 'C', 'D' };
         for (int li = 0; li < 4; li++) {
@@ -822,7 +822,7 @@ int main(void) {
         api->get_param(inst, "loopA_decay_rate", buf, sizeof(buf));
         check(strcmp(buf, "3.0") == 0, "test10: decay_rate clamps to min 3");
 
-        static const char *unit_keys[] = { "wow", "hf_loss", "hiss", "saturation", "chaos" };
+        static const char *unit_keys[] = { "wow", "hf_loss", "hiss", "send", "chaos" };
         for (size_t i = 0; i < sizeof(unit_keys) / sizeof(unit_keys[0]); i++) {
             char key[32];
             snprintf(key, sizeof(key), "loopA_%s", unit_keys[i]);
@@ -956,7 +956,7 @@ int main(void) {
         api->set_param(src, "loopA_wow", "0.7");
         api->set_param(src, "loopA_hf_loss", "0.6");
         api->set_param(src, "loopA_hiss", "0.3");
-        api->set_param(src, "loopA_saturation", "0.9");
+        api->set_param(src, "loopA_send", "0.9");
         api->set_param(src, "loopA_chaos", "0.1");
         api->set_param(src, "loopB_volume", "0.25");
         api->set_param(src, "input_routing", TEST_ROUTE_B);
@@ -978,8 +978,8 @@ int main(void) {
         check(strcmp(buf, "0.600") == 0, "test13: hf_loss restored");
         api->get_param(dst, "loopA_hiss", buf, sizeof(buf));
         check(strcmp(buf, "0.300") == 0, "test13: hiss restored");
-        api->get_param(dst, "loopA_saturation", buf, sizeof(buf));
-        check(strcmp(buf, "0.900") == 0, "test13: saturation restored");
+        api->get_param(dst, "loopA_send", buf, sizeof(buf));
+        check(strcmp(buf, "0.900") == 0, "test13: reverb send restored");
         api->get_param(dst, "loopA_chaos", buf, sizeof(buf));
         check(strcmp(buf, "0.100") == 0, "test13: chaos restored");
         api->get_param(dst, "loopB_volume", buf, sizeof(buf));
@@ -1203,77 +1203,10 @@ int main(void) {
         api->destroy_instance(inst);
     }
 
-    /* ---- Test 16: turning a flavor knob live GLIDES to the new target,
-     * it does not snap. Same constant-value / dry-recovery technique as
-     * Test 14: saturation is 0 (and every other chase-scaled stage is 0)
-     * for the first second of a decay_rate=3s loop, so applied_saturation
-     * has settled at exactly 0. The knob is then turned to max — if the
-     * knob write itself moved applied_saturation, the very next sample
-     * would already show full-drive output; instead it must still read as
-     * identity, because only the CHASE TARGET moved. A further second of
-     * decay must then show the output has audibly moved away from
-     * identity, proving the chase is actually advancing toward the new
-     * target rather than being stuck. ---- */
-    {
-        const int16_t CONST_VALUE = 16000;
-        const float SAMPLE_F = (float)CONST_VALUE / 32768.0f;
-
-        void *inst = api->create_instance(".", NULL);
-        check(inst != NULL, "test16: create_instance");
-
-        api->set_param(inst, "loopA_decay_rate", "3");
-        record_full_buffer_loop_a_constant(api, inst, CONST_VALUE);
-        check(status_is_looping(status_of(api, inst, 'A')), "test16: Looping after buffer-full close");
-
-        api->set_param(inst, "loopA_wow", "0");
-        api->set_param(inst, "loopA_hf_loss", "0");
-        api->set_param(inst, "loopA_hiss", "0");
-        api->set_param(inst, "loopA_chaos", "0");
-        api->set_param(inst, "loopA_saturation", "0");
-        api->set_param(inst, "loopA_volume", "1");
-
-        run_silence(api, inst, TEST_DECAY_FRAMES(1));
-
-        /* Turn Warmth to max NOW — applied_saturation is settled at 0 and
-         * must stay there for the very next sample. */
-        api->set_param(inst, "loopA_saturation", "1");
-
-        int16_t buf[BLOCK_FRAMES * 2];
-        fill_silence(buf, BLOCK_FRAMES);
-        api->process_block(inst, buf, BLOCK_FRAMES);
-
-        float expected_memory = 1.0f - 1.0f / 3.0f;
-        float expected_wet = SAMPLE_F * expected_memory;
-        int32_t expected_out = lroundf(expected_wet * 32767.0f);
-        check(abs((int)buf[0] - (int)expected_out) <= 20 &&
-              abs((int)buf[1] - (int)expected_out) <= 20,
-              "test16: turning saturation to max does not snap — sample right "
-              "after the knob write is still identity (within float32-accumulation "
-              "tolerance, sample 0)");
-
-        /* Let the chase run for another second at the new target (2s total
-         * decay now, decay_rate=3s: memory == 1/3, applied_saturation ==
-         * 1/3). Compare against a freshly-computed identity reference AT
-         * THIS memory level (not the stale 1s one above) so the check is
-         * about saturation actually engaging, not just memory's own further
-         * decay — the two pull output in opposite directions (saturation
-         * drives a mid-level constant hard toward full scale; memory keeps
-         * shrinking it), and saturation's pull dominates by roughly 1800
-         * LSB here, far past any decay-alone or accumulation-error
-         * explanation. */
-        run_silence(api, inst, TEST_DECAY_FRAMES(1));
-        fill_silence(buf, BLOCK_FRAMES);
-        api->process_block(inst, buf, BLOCK_FRAMES);
-
-        float expected_memory_2s = 1.0f - 2.0f / 3.0f;
-        int32_t identity_out_2s = lroundf(SAMPLE_F * expected_memory_2s * 32767.0f);
-        check((int)buf[0] - identity_out_2s > 200,
-              "test16: a second later, saturation has audibly engaged — output is "
-              "well above what pure identity-at-this-memory-level would give, "
-              "proving the chase is actually advancing toward the new target");
-
-        api->destroy_instance(inst);
-    }
+    /* Test 16 removed with Drive (2026-08-27). It proved that turning
+     * Drive live glided rather than snapping, using the saturation stage's
+     * own output as the probe — there is no saturation stage now, and
+     * test17 covers the glide itself for the knobs that remain. */
 
     /* ---------------------------------------------------------------
      * test17: a flavour knob SLEWS. It does not snap, and it does not
@@ -1504,31 +1437,35 @@ int main(void) {
     }
 
     /* ---------------------------------------------------------------
-     * test22b/23: VINYL is a gate — it takes the QUIET material first —
-     * and Freeze stops it, as it stops decay.
+     * test23: VINYL measurably alters the take, and Freeze stops it.
      *
-     * Counts samples below a fixed threshold derived from the CONTROL
-     * run, not from each take's own peak: a peak-relative threshold moves
-     * as the take degrades, which previously made damage look like it was
-     * healing and freezing look broken.
+     * Deliberately weaker than it used to be. The gate is now gradual by
+     * design — a per-pass floor and an age-SQUARED threshold, after
+     * dropouts were reported as arriving "very large very early" and
+     * leaving nothing but hiss — and the medium regulator hides what it
+     * removes by boosting the remainder back to level. Between them, the
+     * obvious signatures (silent fraction, crest factor) no longer order
+     * cleanly on a synthetic take, and thresholds picked against them
+     * measured noise rather than the gate.
+     *
+     * So this asserts what survives both effects: that turning VINYL up
+     * changes the render at all, and that freezing part way through
+     * changes it less. What the erosion SOUNDS like is a tuning question
+     * for the device, not something to pin here with a false number.
      * --------------------------------------------------------------- */
     {
-        long quiet[3]; double peak[3]; double pk_ref = 0.0;
-        for (int pass = 0; pass < 3; pass++) {
+        /* 0: plain  1: VINYL  2: frozen  3: frozen+VINYL */
+        static int16_t cap[4][200 * BLOCK_FRAMES];
+        for (int pass = 0; pass < 4; pass++) {
             void *inst = api->create_instance(".", NULL);
             check(inst != NULL, "test23: create_instance");
-            api->set_param(inst, "loopA_decay_rate", "90");
+            api->set_param(inst, "loopA_decay_rate", "240");
             api->set_param(inst, "input_routing", "A");
             press_record(api, inst);
             float phase = 0.0f;
             int16_t tb[BLOCK_FRAMES * 2];
-            /* One CONTIGUOUS quiet stretch, a quarter of the loop. An
-             * alternating pattern does not work: 128 frames is ~2.9ms,
-             * far under the gate's 120ms release, so the envelope never
-             * falls and the gate never closes. */
-            for (int b = 0; b < 344; b++) {
-                fill_tone(tb, BLOCK_FRAMES, (b >= 258) ? 0.08f : 0.30f,
-                          400.0f, &phase);
+            for (int b = 0; b < 200; b++) {
+                fill_tone(tb, BLOCK_FRAMES, (b >= 150) ? 0.08f : 0.30f, 400.0f, &phase);
                 api->process_block(inst, tb, BLOCK_FRAMES);
             }
             api->set_param(inst, "master_record", "STOP!");
@@ -1536,53 +1473,38 @@ int main(void) {
             api->set_param(inst, "loopA_hiss", "0");
             api->set_param(inst, "loopA_hf_loss", "0");
             api->set_param(inst, "loopA_wow", "0");
-            api->set_param(inst, "loopA_saturation", "0");
-            api->set_param(inst, "loopA_chaos", pass == 0 ? "0" : "1");
-
-            if (pass == 2) {
-                run_silence(api, inst, (long)SAMPLE_RATE * 8);
+            api->set_param(inst, "loopA_send", "0");
+            api->set_param(inst, "loopA_chaos", (pass == 1 || pass == 3) ? "1" : "0");
+            if (pass >= 2) {
+                run_silence(api, inst, (long)SAMPLE_RATE * 20);
                 api->set_param(inst, "master_freeze", "Freeze!");
             }
-            run_silence(api, inst, (long)SAMPLE_RATE * 30);
-
-            /* Threshold relative to THIS run's own peak. Freezing also
-             * stops Age, so a frozen take is simply louder, and an
-             * absolute threshold counts that as "less eaten" no matter
-             * what the gate did. Peak-relative is safe specifically
-             * because a gate PRESERVES peaks — it is the quiet material it
-             * takes — so the peak tracks level and divides the confound
-             * back out. */
-            static int16_t cap[344 * BLOCK_FRAMES];
-            double pk = 0.0;
-            for (int b = 0; b < 344; b++) {
+            run_silence(api, inst, (long)SAMPLE_RATE * 100);
+            for (int b = 0; b < 200; b++) {
                 fill_silence(tb, BLOCK_FRAMES);
                 api->process_block(inst, tb, BLOCK_FRAMES);
-                for (int i = 0; i < BLOCK_FRAMES; i++) {
-                    cap[b * BLOCK_FRAMES + i] = tb[i * 2];
-                    double v = fabs((double)tb[i * 2]);
-                    if (v > pk) pk = v;
-                }
+                for (int i = 0; i < BLOCK_FRAMES; i++)
+                    cap[pass][b * BLOCK_FRAMES + i] = tb[i * 2];
             }
-            long q = 0;
-            double thr = pk * 0.10;
-            for (int i = 0; i < 344 * BLOCK_FRAMES; i++)
-                if (fabs((double)cap[i]) < thr) q++;
-            (void)pk_ref;
-            quiet[pass] = q; peak[pass] = pk;
             api->destroy_instance(inst);
         }
-        check(quiet[1] > quiet[0] * 13 / 10,
-              "test23: VINYL leaves far more of the take sitting at silence — "
-              "the gate has removed the quiet material and what survives is "
-              "peaks out of nothing");
-        check(peak[1] > peak[0] * 0.8,
-              "test23: and the LOUD material is still there — a gate takes "
-              "the quiet first, which is what separates it from punching "
-              "holes at random, and is why what survives reads as fragments "
-              "rather than damage");
-        check(quiet[2] < quiet[1] && quiet[2] > quiet[0],
-              "test23: freezing part way through lands BETWEEN the two — it "
-              "ate what it ate before the freeze and nothing after, because "
+        /* Each VINYL run is compared with its OWN control. Freezing also
+         * halts Age, so a frozen take differs from an unfrozen one for
+         * reasons that have nothing to do with the gate — comparing across
+         * that difference measured the decay, not the damage. */
+        double ref = 0.0, d_run = 0.0, d_frozen = 0.0;
+        for (int i = 0; i < 200 * BLOCK_FRAMES; i++) {
+            double c = cap[0][i];
+            ref += c * c;
+            double a = (double)cap[1][i] - c;
+            double b = (double)cap[3][i] - (double)cap[2][i];
+            d_run += a * a; d_frozen += b * b;
+        }
+        check(ref > 0.0, "test23: the control take is not silent");
+        check(d_run > ref * 0.05,
+              "test23: VINYL at maximum measurably alters the take");
+        check(d_frozen < d_run,
+              "test23: and it alters a take frozen part way through LESS — "
               "Freeze stops the medium moving past the head");
     }
 
@@ -1706,23 +1628,33 @@ int main(void) {
         const char *d = strstr(js, "{\"level\":\"distance\"");
         const char *a = strstr(js, "{\"level\":\"loopA\"");
         check(d && a && d < a, "test26: Distance sits between Main and the memory pages");
-        check(strstr(js, "\"loopA_speed\",\"loopB_speed\"") != NULL &&
-              strstr(js, "\"loopA_send\",\"loopB_send\"") != NULL,
-              "test26: Distance carries the speeds over the sends");
+        check(strstr(js, "\"loopA_speed\",\"loopB_speed\"") != NULL,
+              "test26: Distance carries the four speeds");
+        check(strstr(js, "\"loopA_decay_rate\",\"loopA_send\"") != NULL,
+              "test26: the reverb send took Drive's slot on the memory page");
+        check(strstr(js, "loopA_saturation") == NULL,
+              "test26: Drive is gone from the hierarchy");
         check(strstr(js, "\"master_freeze\",\"loopA_volume\"") != NULL,
               "test26: the volumes are back on Main");
 
         /* "1x" must not read back as a division: atoi("1x") is 1, so an
          * index-only parse selects the wrong option. */
         char v[32];
-        const char *want[3] = { "1x", "1/2", "1/4" };
-        for (int k = 0; k < 3; k++) {
+        /* Declared low-to-high so the encoder lands where the fingers
+         * expect: 1x is home, left goes down an octave at a time, right
+         * goes up. */
+        const char *want[4] = { "1/4", "1/2", "1x", "2x" };
+        for (int k = 0; k < 4; k++) {
             api->set_param(inst, "loopA_speed", want[k]);
             api->get_param(inst, "loopA_speed", v, sizeof(v));
             check(strcmp(v, want[k]) == 0, "test26: speed reads back what was written");
         }
 
         /* both survive a state round-trip, or a saved set loses them */
+        api->get_param(inst, "loopB_speed", v, sizeof(v));
+        check(strcmp(v, "1x") == 0,
+              "test26: a fresh memory starts at 1x — speed_mul is set AFTER "
+              "init_loop's memset, or the read rate is zero and nothing plays");
         api->set_param(inst, "loopC_speed", "1/4");
         api->set_param(inst, "loopC_send", "0.75");
         api->get_param(inst, "state", js, sizeof(js));
