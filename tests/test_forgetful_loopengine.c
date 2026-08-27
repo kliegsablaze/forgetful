@@ -19,7 +19,7 @@
  * depends on how long the recording is.
  *
  * Covers:
- *   0. chain_params / ui_hierarchy shape — exactly 40 entries (8 master +
+ *   0. chain_params / ui_hierarchy shape — exactly 44 entries (8 master +
  *      4x8 loop), every expected key present in both, including
  *      master_record/master_freeze, and no OFF option in Route's options
  *      list.
@@ -352,7 +352,8 @@ int main(void) {
         int key_count = 0;
         const char *p = cp;
         while ((p = strstr(p, "\"key\":\"")) != NULL) { key_count++; p += 7; }
-        check(key_count == 40, "test0: chain_params has exactly 40 entries (8 master + 4x8 loop)");
+        check(key_count == 44,
+              "test0: chain_params has exactly 44 entries (8 master + 4x9 loop; the ninth is loopX_half_speed, added with the Mixer page)");
 
         n = api->get_param(inst, "ui_hierarchy", hier, sizeof(hier));
         check(n > 0, "test0: ui_hierarchy readable");
@@ -372,11 +373,11 @@ int main(void) {
             snprintf(probe, sizeof(probe), "\"%s\":{\"label\":\"%s\"", level_keys[i], level_labels[i]);
             check(strstr(hier, probe) != NULL, "test0: ui_hierarchy loop level has its own label");
         }
-        /* Master's top row is now fully occupied — Route, Status, Rec,
-         * Freeze — no blank slots left (2026-08-25 added Freeze into the
-         * last one). */
-        check(strstr(hier, "\"master_loops_overview\",\"master_record\",\"master_freeze\",\"loopA_volume\"") != NULL,
-              "test0: Master page's top row is Route/Status/Rec/Freeze, no blanks");
+        /* Main's top row is Route/Status/Rec/Freeze; its bottom row is
+         * deliberately empty since the volumes moved to the Mixer page. */
+        check(strstr(hier, "\"master_loops_overview\",\"master_record\",\"master_freeze\",\"\",\"\",\"\",\"\"") != NULL,
+              "test0: Main's top row is Route/Status/Rec/Freeze and its "
+              "bottom row is blank");
 
         /* every expected key, in both blobs */
         static const char *master_keys[] = {
@@ -1691,6 +1692,53 @@ int main(void) {
               "test25: the loop wraps without a click — both ends of the "
               "take are faded to silence, so the splice is silence to "
               "silence instead of an ~8000-count step every pass");
+        api->destroy_instance(inst);
+    }
+
+    /* ---------------------------------------------------------------
+     * test26: the Mixer page, and half speed.
+     * --------------------------------------------------------------- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        check(inst != NULL, "test26: create_instance");
+        static char js[16384];
+        int n = api->get_param(inst, "ui_hierarchy", js, sizeof(js));
+        check(n > 0, "test26: ui_hierarchy is served");
+        check(strstr(js, "\"mixer\"") != NULL, "test26: a mixer level exists");
+        /* Mixer must be the FIRST nav entry, i.e. the page right after
+         * Main — the planner orders the bank by walking root's params. */
+        const char *m = strstr(js, "{\"level\":\"mixer\"");
+        const char *a = strstr(js, "{\"level\":\"loopA\"");
+        check(m && a && m < a, "test26: Mixer sits between Main and the memory pages");
+        /* Main's bottom row is empty, the volumes having moved */
+        check(strstr(js, "\"master_freeze\",\"\",\"\",\"\",\"\"") != NULL,
+              "test26: Main's bottom row is blank");
+        check(strstr(js, "\"loopA_half_speed\",\"loopB_half_speed\"") != NULL &&
+              strstr(js, "\"loopA_volume\",\"loopB_volume\"") != NULL,
+              "test26: Mixer carries the speeds over the volumes");
+
+        n = api->get_param(inst, "chain_params", js, sizeof(js));
+        check(n > 0 && strstr(js, "loopD_half_speed") != NULL,
+              "test26: half_speed is declared in chain_params");
+
+        /* "1x" must not read back as half: atoi("1x") is 1, so an
+         * index-only parse selects the wrong option. */
+        api->set_param(inst, "loopA_half_speed", "1/2");
+        char v[32];
+        api->get_param(inst, "loopA_half_speed", v, sizeof(v));
+        check(strcmp(v, "1/2") == 0, "test26: reads back 1/2");
+        api->set_param(inst, "loopA_half_speed", "1x");
+        api->get_param(inst, "loopA_half_speed", v, sizeof(v));
+        check(strcmp(v, "1x") == 0, "test26: and back to 1x again");
+
+        /* it survives a state round-trip, or a saved set loses it */
+        api->set_param(inst, "loopC_half_speed", "1/2");
+        api->get_param(inst, "state", js, sizeof(js));
+        void *i2 = api->create_instance(".", NULL);
+        api->set_param(i2, "state", js);
+        api->get_param(i2, "loopC_half_speed", v, sizeof(v));
+        check(strcmp(v, "1/2") == 0, "test26: half speed survives a state round-trip");
+        api->destroy_instance(i2);
         api->destroy_instance(inst);
     }
 

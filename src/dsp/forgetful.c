@@ -578,6 +578,12 @@ typedef struct {
     int   warp_drift_countdown;
     float hiss_lp_l, hiss_lp_r;  /* hiss-coloring filter state, see HISS_COLOR_COEFF */
     float crackle_env;  /* VINYL click/pop envelope, see CRACKLE_DUST_MAX_PROB */
+    int   half_speed;  /* Mixer page: read the tape at half rate, so the
+                        * loop drops an octave and takes twice as long to
+                        * come round. Applied as a multiplier ON TOP of
+                        * Warp's modulation rather than replacing it, so
+                        * the two compose instead of one cancelling the
+                        * other. */
     int   frozen;  /* master_freeze: memory stops draining, loop keeps
                     * playing at whatever character it already reached */
     int   overdubbing;  /* master_record's second toggle while LOOPING (not
@@ -1065,6 +1071,7 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                              loop->warp_drift * DRIFT_MOD_DEPTH) * w +
                             sinf(loop->flutter_phase) * FLUTTER_MOD_DEPTH * w * w;
                 double speed = 1.0 + mod;
+                if (loop->half_speed) speed *= 0.5;
 
                 loop->wow_phase += 2.0f * PI_F * WOW_RATE_HZ / SAMPLE_RATE;
                 if (loop->wow_phase >= 2.0f * PI_F) loop->wow_phase -= 2.0f * PI_F;
@@ -1628,6 +1635,14 @@ static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *
         /* wire key stays "chaos" (see the crackle field comment on
          * loop_engine_t) — this is VINYL's live value. */
         flavor_ramp_set_param(&loop->crackle_ramp, &loop->applied_crackle, (float)atof(val), loop->memory, loop->decay_rate, loop->frozen);
+    } else if (strcmp(suffix, "half_speed") == 0) {
+        /* The option STRINGS have to be matched before falling back to an
+         * index, because atoi("1x") is 1 — the normal-speed spelling would
+         * otherwise select half speed. */
+        if (strcmp(val, "1/2") == 0)      loop->half_speed = 1;
+        else if (strcmp(val, "1x") == 0)  loop->half_speed = 0;
+        else                              loop->half_speed = (atoi(val) != 0);
+        return;
     } else if (strcmp(suffix, "erase") == 0) {
         /* gesture-test's pattern: fire on anything that isn't the idle
          * spelling. Single click, no confirm — was double-click-confirm
@@ -1666,6 +1681,11 @@ static int loop_get_param(const loop_engine_t *loop, uint64_t total_frames, cons
     if (strcmp(suffix, "hiss") == 0)        return snprintf(buf, len, "%.3f", loop->hiss_ramp.target);
     if (strcmp(suffix, "saturation") == 0)  return snprintf(buf, len, "%.3f", loop->saturation);
     if (strcmp(suffix, "chaos") == 0)       return snprintf(buf, len, "%.3f", loop->crackle_ramp.target);
+    if (strcmp(suffix, "half_speed") == 0) {
+        /* Names the CURRENT state, like Freeze — it is a setting you can
+         * see rather than an action, and four of them sit side by side. */
+        return snprintf(buf, len, loop->half_speed ? "1/2" : "1x");
+    }
     if (strcmp(suffix, "erase") == 0) {
         /* "ERASE" at rest (2026-08-25, was always "-"), "ERASING n" while
          * one is running (2026-08-27), with the same digit ECHO shows for
@@ -1735,6 +1755,8 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
             if (json_get_float(val, key_buf, &v) == 0) s->loops[i].saturation = clampf(v, 0.0f, 1.0f);
             snprintf(key_buf, sizeof(key_buf), "loop%c_chaos", LOOP_LETTERS[i]);
             if (json_get_float(val, key_buf, &v) == 0) s->loops[i].crackle_ramp.target = clampf(v, 0.0f, 1.0f);
+            snprintf(key_buf, sizeof(key_buf), "loop%c_half_speed", LOOP_LETTERS[i]);
+            if (json_get_float(val, key_buf, &v) == 0) s->loops[i].half_speed = (v != 0.0f);
         }
         return;
     }
@@ -1891,7 +1913,7 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
     if (suffix) return loop_get_param(&s->loops[li], s->total_frames, suffix, buf, len);
 
     if (strcmp(key, "state") == 0) {
-        char json[1024];
+        char json[1536];   /* grew with loopX_half_speed */
         int pos = snprintf(json, sizeof(json), "{\"input_routing\":%d", s->input_routing);
         for (int i = 0; i < NUM_LOOPS; i++) {
             pos += snprintf(json + pos, sizeof(json) - pos, ",\"loop%c_volume\":%.4f",
@@ -1901,10 +1923,12 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
             const loop_engine_t *loop = &s->loops[i];
             pos += snprintf(json + pos, sizeof(json) - pos,
                 ",\"loop%c_decay_rate\":%.4f,\"loop%c_wow\":%.4f,\"loop%c_hf_loss\":%.4f,"
-                "\"loop%c_hiss\":%.4f,\"loop%c_saturation\":%.4f,\"loop%c_chaos\":%.4f",
+                "\"loop%c_hiss\":%.4f,\"loop%c_saturation\":%.4f,\"loop%c_chaos\":%.4f,"
+                "\"loop%c_half_speed\":%d",
                 LOOP_LETTERS[i], loop->decay_rate, LOOP_LETTERS[i], loop->wow_ramp.target,
                 LOOP_LETTERS[i], loop->hf_loss_ramp.target, LOOP_LETTERS[i], loop->hiss_ramp.target,
-                LOOP_LETTERS[i], loop->saturation, LOOP_LETTERS[i], loop->crackle_ramp.target);
+                LOOP_LETTERS[i], loop->saturation, LOOP_LETTERS[i], loop->crackle_ramp.target,
+                LOOP_LETTERS[i], loop->half_speed);
         }
         pos += snprintf(json + pos, sizeof(json) - pos, "}");
         if (pos >= (int)sizeof(json) || pos >= len) return -1;
@@ -1922,8 +1946,11 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
             pos += snprintf(json + pos, sizeof(json) - pos,
                 ",{\"key\":\"loop%c_volume\",\"name\":\"%c\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":%.2f,\"step\":0.01,\"unit\":\"%%\","
-                  "\"display_format\":\"%%.0f\"}",
-                LOOP_LETTERS[i], LOOP_LETTERS[i], (double)DEFAULT_LOOP_VOLUME);
+                  "\"display_format\":\"%%.0f\"}"
+                ",{\"key\":\"loop%c_half_speed\",\"name\":\"%c\",\"type\":\"enum\","
+                  "\"options\":[\"1x\",\"1/2\"]}",
+                LOOP_LETTERS[i], LOOP_LETTERS[i], (double)DEFAULT_LOOP_VOLUME,
+                LOOP_LETTERS[i], LOOP_LETTERS[i]);
         }
         /* "enum", not "string": a read-only string routes through the opaque
          * knob-widget renderer (drawOpaqueBox), a single truncated line ~2
@@ -2033,20 +2060,26 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
             "{\"modes\":null,\"levels\":{"
             "\"root\":{\"label\":\"Forgetful\","
               "\"knobs\":[\"input_routing\",\"master_loops_overview\",\"master_record\",\"master_freeze\","
-                "\"loopA_volume\",\"loopB_volume\",\"loopC_volume\",\"loopD_volume\"],"
+                "\"\",\"\",\"\",\"\"],"
               "\"params\":["
                 "{\"key\":\"input_routing\",\"label\":\"Send\"},"
                 "{\"key\":\"master_loops_overview\",\"label\":\"ECHO\"},"
                 "{\"key\":\"master_record\",\"label\":\"REC\"},"
                 "{\"key\":\"master_freeze\",\"label\":\"Freeze\"},"
-                "{\"key\":\"loopA_volume\",\"label\":\"A\"},"
-                "{\"key\":\"loopB_volume\",\"label\":\"B\"},"
-                "{\"key\":\"loopC_volume\",\"label\":\"C\"},"
-                "{\"key\":\"loopD_volume\",\"label\":\"D\"},"
+                "{\"level\":\"mixer\",\"label\":\"Mixer\"},"
                 "{\"level\":\"loopA\",\"label\":\"A\"},"
                 "{\"level\":\"loopB\",\"label\":\"B\"},"
                 "{\"level\":\"loopC\",\"label\":\"C\"},"
-                "{\"level\":\"loopD\",\"label\":\"D\"}]}");
+                "{\"level\":\"loopD\",\"label\":\"D\"}]}"
+              /* Mixer: the four speeds on the top row, the four volumes
+               * underneath, so each memory reads as a column. Sits between
+               * Main and the memory pages because the nav entries in root's
+               * "params" are what the planner walks to order the bank. */
+              ",\"mixer\":{\"label\":\"Mixer\",\"knobs\":["
+                "\"loopA_half_speed\",\"loopB_half_speed\","
+                "\"loopC_half_speed\",\"loopD_half_speed\","
+                "\"loopA_volume\",\"loopB_volume\","
+                "\"loopC_volume\",\"loopD_volume\"]}");
         for (int i = 0; i < NUM_LOOPS; i++) {
             char c = LOOP_LETTERS[i];
             pos += snprintf(json + pos, sizeof(json) - pos,
