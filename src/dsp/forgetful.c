@@ -360,6 +360,25 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * rather than switched, so nothing clicks. */
 #define SPEED_GLIDE_SECONDS   5.0f
 
+/* ---- Tone: one knob, both filters ------------------------------------
+ * The Dirtywave M8's DJ filter. Centre is a true bypass; left sweeps a
+ * lowpass down, right sweeps a highpass up. Two poles either way, so a
+ * hard turn actually removes the end of the spectrum rather than tilting
+ * it, and the cutoff is exponential in the knob so the travel is even.
+ *
+ * This is a PERFORMANCE control and deliberately NOT part of the medium:
+ * it sits at the loop's output, after the write-back, so sweeping it
+ * changes what you hear without printing anything onto the tape. Darken
+ * is the one that damages, and it is on the memory page for that reason.
+ *
+ * It is placed before the volume and the reverb send tap, so a filtered
+ * memory sends its filtered self — a DJ filter that the reverb ignored
+ * would keep bringing back the top end you just swept away. */
+#define TONE_LP_MIN_HZ      120.0f
+#define TONE_LP_MAX_HZ    20000.0f
+#define TONE_HP_MIN_HZ       20.0f
+#define TONE_HP_MAX_HZ     8000.0f
+
 #define GATE_MAX_THRESHOLD    0.30f
 /* How much of a frame a single pass may remove. Without a floor the gain
  * goes straight to zero the moment a frame is under threshold, and since
@@ -810,6 +829,10 @@ typedef struct {
      * arrive with a swoop. Advanced once per block — one octave over five
      * seconds is 0.007 semitones per block, far below anything audible as
      * a step, and it keeps an exp2f out of the sample loop. */
+    float tone;                     /* -1 .. +1, 0 = bypass */
+    float tone_a;                   /* per-block coefficient */
+    int   tone_mode;                /* -1 lowpass, 0 bypass, +1 highpass */
+    float tone_z1_l, tone_z1_r, tone_z2_l, tone_z2_r;
     float speed_log_cur, speed_log_target, speed_log_step;
     float speed_eff;   /* exp2(speed_log_cur), what the read head uses */
     float speed_mul;   /* 0.25 / 0.5 / 1 / 2: the SELECTED rate, so the loop shifts
@@ -1234,6 +1257,24 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
             if (fabsf(diff) <= move || move <= 0.0f) loop->speed_log_cur = loop->speed_log_target;
             else loop->speed_log_cur += (diff > 0.0f) ? move : -move;
             loop->speed_eff = exp2f(loop->speed_log_cur);
+        }
+
+        {
+            float t = clampf(loop->tone, -1.0f, 1.0f);
+            if (t > -0.02f && t < 0.02f) {
+                loop->tone_mode = 0;
+            } else if (t < 0.0f) {
+                loop->tone_mode = -1;
+                float fc = TONE_LP_MAX_HZ *
+                           powf(TONE_LP_MIN_HZ / TONE_LP_MAX_HZ, -t);
+                loop->tone_a = 1.0f - expf(-2.0f * PI_F * fc / SAMPLE_RATE);
+            } else {
+                loop->tone_mode = 1;
+                float fc = TONE_HP_MIN_HZ *
+                           powf(TONE_HP_MAX_HZ / TONE_HP_MIN_HZ, t);
+                loop->tone_a = 1.0f - expf(-2.0f * PI_F * fc / SAMPLE_RATE);
+            }
+            if (loop->tone_a > 1.0f) loop->tone_a = 1.0f;
         }
 
         loop->warp_amt = flavour_reach(loop->applied_wow, age);
@@ -1721,6 +1762,26 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
             }
             }
 
+            /* Tone — see TONE_LP_MIN_HZ. Output only; nothing here is
+             * written back onto the medium. */
+            if (loop->tone_mode != 0) {
+                float a = loop->tone_a;
+                loop->tone_z1_l += a * (wet_l - loop->tone_z1_l);
+                loop->tone_z1_r += a * (wet_r - loop->tone_z1_r);
+                if (loop->tone_mode < 0) {
+                    loop->tone_z2_l += a * (loop->tone_z1_l - loop->tone_z2_l);
+                    loop->tone_z2_r += a * (loop->tone_z1_r - loop->tone_z2_r);
+                    wet_l = loop->tone_z2_l; wet_r = loop->tone_z2_r;
+                } else {
+                    float h_l = wet_l - loop->tone_z1_l;
+                    float h_r = wet_r - loop->tone_z1_r;
+                    loop->tone_z2_l += a * (h_l - loop->tone_z2_l);
+                    loop->tone_z2_r += a * (h_r - loop->tone_z2_r);
+                    wet_l = h_l - loop->tone_z2_l;
+                    wet_r = h_r - loop->tone_z2_r;
+                }
+            }
+
             /* post-fader: turning a memory down turns its send down with
              * it, which is what "send" means everywhere else */
             float lvl_l = wet_l * s->loop_volume[li];
@@ -1902,6 +1963,9 @@ static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *
         /* wire key stays "chaos" (see the crackle field comment on
          * loop_engine_t) — this is VINYL's live value. */
         flavor_ramp_set_param(&loop->crackle_ramp, &loop->applied_crackle, (float)atof(val), loop->memory, loop->decay_rate, loop->frozen);
+    } else if (strcmp(suffix, "tone") == 0) {
+        loop->tone = clampf((float)atof(val) / 100.0f, -1.0f, 1.0f);
+        return;
     } else if (strcmp(suffix, "speed") == 0) {
         /* The option STRINGS are matched before any index fallback,
          * because atoi("1x") is 1 — the normal-speed spelling would
@@ -1957,6 +2021,8 @@ static int loop_get_param(const loop_engine_t *loop, uint64_t total_frames, cons
     if (strcmp(suffix, "hf_loss") == 0)     return snprintf(buf, len, "%.3f", loop->hf_loss_ramp.target);
     if (strcmp(suffix, "hiss") == 0)        return snprintf(buf, len, "%.3f", loop->hiss_ramp.target);
     if (strcmp(suffix, "chaos") == 0)       return snprintf(buf, len, "%.3f", loop->crackle_ramp.target);
+    if (strcmp(suffix, "tone") == 0)
+        return snprintf(buf, len, "%.0f", (double)(loop->tone * 100.0f));
     if (strcmp(suffix, "speed") == 0) {
         /* Names the CURRENT state, like Freeze — it is a setting you can
          * see rather than an action, and four of them sit side by side. */
@@ -2033,6 +2099,9 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
             if (json_get_float(val, key_buf, &v) == 0) s->loops[i].hiss_ramp.target = clampf(v, 0.0f, 1.0f);
             snprintf(key_buf, sizeof(key_buf), "loop%c_chaos", LOOP_LETTERS[i]);
             if (json_get_float(val, key_buf, &v) == 0) s->loops[i].crackle_ramp.target = clampf(v, 0.0f, 1.0f);
+            snprintf(key_buf, sizeof(key_buf), "loop%c_tone", LOOP_LETTERS[i]);
+            if (json_get_float(val, key_buf, &v) == 0)
+                s->loops[i].tone = clampf(v, -1.0f, 1.0f);
             snprintf(key_buf, sizeof(key_buf), "loop%c_speed", LOOP_LETTERS[i]);
             if (json_get_float(val, key_buf, &v) == 0)
             {
@@ -2221,11 +2290,12 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
             pos += snprintf(json + pos, sizeof(json) - pos,
                 ",\"loop%c_decay_rate\":%.4f,\"loop%c_wow\":%.4f,\"loop%c_hf_loss\":%.4f,"
                 "\"loop%c_hiss\":%.4f,\"loop%c_chaos\":%.4f,"
-                "\"loop%c_speed\":%.4f",
+                "\"loop%c_speed\":%.4f,\"loop%c_tone\":%.4f",
                 LOOP_LETTERS[i], loop->decay_rate, LOOP_LETTERS[i], loop->wow_ramp.target,
                 LOOP_LETTERS[i], loop->hf_loss_ramp.target, LOOP_LETTERS[i], loop->hiss_ramp.target,
                 LOOP_LETTERS[i], loop->crackle_ramp.target,
-                LOOP_LETTERS[i], (double)loop->speed_mul);
+                LOOP_LETTERS[i], (double)loop->speed_mul,
+                LOOP_LETTERS[i], (double)loop->tone);
         }
         pos += snprintf(json + pos, sizeof(json) - pos, "}");
         if (pos >= (int)sizeof(json) || pos >= len) return -1;
@@ -2246,8 +2316,11 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                   "\"display_format\":\"%%.0f\"}"
                 ",{\"key\":\"loop%c_speed\",\"name\":\"%c\",\"type\":\"enum\","
                   "\"options\":[\"1/4\",\"1/2\",\"1x\",\"2x\"],\"default\":\"1x\"}"
-,
+                ",{\"key\":\"loop%c_tone\",\"name\":\"%c\",\"type\":\"float\","
+                  "\"min\":-100,\"max\":100,\"default\":0,\"step\":1,\"unit\":\"%%\","
+                  "\"display_format\":\"%%.0f\"}",
                 LOOP_LETTERS[i], LOOP_LETTERS[i], (double)DEFAULT_LOOP_VOLUME,
+                LOOP_LETTERS[i], LOOP_LETTERS[i],
                 LOOP_LETTERS[i], LOOP_LETTERS[i]);
         }
         /* "enum", not "string": a read-only string routes through the opaque
@@ -2384,7 +2457,8 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
               ",\"distance\":{\"label\":\"Distance\",\"knobs\":["
                 "\"loopA_speed\",\"loopB_speed\","
                 "\"loopC_speed\",\"loopD_speed\","
-                "\"\",\"\",\"\",\"\"]}");
+                "\"loopA_tone\",\"loopB_tone\","
+                "\"loopC_tone\",\"loopD_tone\"]}");
         for (int i = 0; i < NUM_LOOPS; i++) {
             char c = LOOP_LETTERS[i];
             pos += snprintf(json + pos, sizeof(json) - pos,

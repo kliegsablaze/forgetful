@@ -19,7 +19,7 @@
  * depends on how long the recording is.
  *
  * Covers:
- *   0. chain_params / ui_hierarchy shape — exactly 44 entries (8 master +
+ *   0. chain_params / ui_hierarchy shape — exactly 48 entries (8 master +
  *      4x8 loop), every expected key present in both, including
  *      master_record/master_freeze, and no OFF option in Route's options
  *      list.
@@ -376,8 +376,8 @@ int main(void) {
         int key_count = 0;
         const char *p = cp;
         while ((p = strstr(p, "\"key\":\"")) != NULL) { key_count++; p += 7; }
-        check(key_count == 44,
-              "test0: chain_params has exactly 44 entries (8 master + 4x9 loop; Drive went, loopX_speed and loopX_send arrived)");
+        check(key_count == 48,
+              "test0: chain_params has exactly 48 entries (8 master + 4x10 loop)");
 
         n = api->get_param(inst, "ui_hierarchy", hier, sizeof(hier));
         check(n > 0, "test0: ui_hierarchy readable");
@@ -414,7 +414,7 @@ int main(void) {
             check(strstr(hier, probe) != NULL, "test0: ui_hierarchy contains master key");
         }
         static const char *loop_suffixes[] = {
-            "decay_rate", "wow", "hf_loss", "hiss", "send", "chaos", "state", "erase", "speed"
+            "decay_rate", "wow", "hf_loss", "hiss", "send", "chaos", "state", "erase", "speed", "tone"
         };
         static const char letters[] = { 'A', 'B', 'C', 'D' };
         for (int li = 0; li < 4; li++) {
@@ -1784,6 +1784,63 @@ int main(void) {
         check(arrived > 210.0 && arrived < 230.0,
               "test28: arrives an octave down, and settles there");
         api->destroy_instance(inst);
+    }
+
+    /* ---------------------------------------------------------------
+     * test29: Tone is a DJ filter — bypass at centre, lowpass left,
+     * highpass right. Measured on broadband content with a Goertzel at
+     * 150Hz and 6kHz, since the whole point is which END goes away.
+     * --------------------------------------------------------------- */
+    {
+        double lo[3], hi[3];
+        const int tones[3] = { -100, 0, 100 };
+        for (int k = 0; k < 3; k++) {
+            void *inst = api->create_instance(".", NULL);
+            check(inst != NULL, "test29: create_instance");
+            api->set_param(inst, "loopA_decay_rate", "600");
+            api->set_param(inst, "input_routing", "A");
+            press_record(api, inst);
+            int16_t tb[BLOCK_FRAMES * 2];
+            g_noise_state = 909u;
+            for (int b = 0; b < 200; b++) {
+                fill_noise(tb, BLOCK_FRAMES, 0.28f);
+                api->process_block(inst, tb, BLOCK_FRAMES);
+            }
+            api->set_param(inst, "master_record", "STOP!");
+            api->set_param(inst, "loopA_volume", "1");
+            api->set_param(inst, "loopA_hiss", "0");
+            api->set_param(inst, "loopA_chaos", "0");
+            api->set_param(inst, "loopA_wow", "0");
+            api->set_param(inst, "loopA_hf_loss", "0");
+            api->set_param(inst, "loopA_send", "0");
+            char tv[16]; snprintf(tv, sizeof(tv), "%d", tones[k]);
+            api->set_param(inst, "loopA_tone", tv);
+            run_silence(api, inst, BLOCK_FRAMES * 20);
+
+            static double x[160 * BLOCK_FRAMES];
+            long n = 0;
+            for (int b = 0; b < 160; b++) {
+                fill_silence(tb, BLOCK_FRAMES);
+                api->process_block(inst, tb, BLOCK_FRAMES);
+                for (int i = 0; i < BLOCK_FRAMES; i++) x[n++] = tb[i * 2];
+            }
+            for (int band = 0; band < 2; band++) {
+                double fq = band ? 6000.0 : 150.0;
+                double w = 2.0 * M_PI * fq / (double)SAMPLE_RATE;
+                double c = 2.0 * cos(w), s1 = 0.0, s2 = 0.0;
+                for (long i = 0; i < n; i++) { double s0 = x[i] + c*s1 - s2; s2 = s1; s1 = s0; }
+                double m = sqrt(fabs(s1*s1 + s2*s2 - c*s1*s2)) / (double)n;
+                if (band) hi[k] = m; else lo[k] = m;
+            }
+            api->destroy_instance(inst);
+        }
+        check(lo[1] > 0.0 && hi[1] > 0.0, "test29: centre passes both ends");
+        check(hi[0] < hi[1] * 0.2,
+              "test29: hard left takes the top away (lowpass)");
+        check(lo[0] > hi[0],
+              "test29: and leaves the bottom behind");
+        check(lo[2] < lo[1] * 0.2,
+              "test29: hard right takes the bottom away (highpass)");
     }
 
     if (g_failures > 0) {
