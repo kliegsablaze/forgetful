@@ -140,6 +140,17 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
                                       * discarded rather than a loop being
                                       * "let go of". */
 
+/* A recorded take ends wherever your finger left it, which is almost never
+ * where it started, so the buffer wraps from one arbitrary sample to
+ * another. Measured on a 220 Hz take that is a ~8000-count step, and it
+ * fires on EVERY pass, not just the first — it reads as a pop when
+ * recording stops only because that is when playback begins.
+ *
+ * Both ends are faded to zero so the wrap is silence-to-silence. A real
+ * tape loop has a splice; this is that splice, and at 4ms it is under the
+ * ear's threshold for a click while still guaranteeing continuity. */
+#define TAKE_EDGE_FADE_S      0.004f
+
 #define MIN_RECORDED_FRAMES      ((int)(MIN_RECORDED_MS * SAMPLE_RATE / 1000))
 #define FORGOTTEN_DISPLAY_FRAMES ((uint64_t)(FORGOTTEN_DISPLAY_MS * SAMPLE_RATE / 1000))
 
@@ -801,6 +812,21 @@ static void close_recording(loop_engine_t *loop) {
         return;
     }
     loop->recorded_length = loop->write_head;
+
+    /* top and tail the splice — see TAKE_EDGE_FADE_S */
+    {
+        int fade = (int)(SAMPLE_RATE * TAKE_EDGE_FADE_S);
+        if (fade > loop->recorded_length / 8) fade = loop->recorded_length / 8;
+        for (int i = 0; i < fade; i++) {
+            float w = (float)i / (float)fade;
+            int j = loop->recorded_length - 1 - i;
+            loop->buffer[i].l = (int16_t)(loop->buffer[i].l * w);
+            loop->buffer[i].r = (int16_t)(loop->buffer[i].r * w);
+            loop->buffer[j].l = (int16_t)(loop->buffer[j].l * w);
+            loop->buffer[j].r = (int16_t)(loop->buffer[j].r * w);
+        }
+    }
+
     /* grabbed before the per-take reset below wipes record_abs_sum */
     float take_level = loop->record_abs_sum / (float)loop->recorded_length;
     loop->read_head = 0.0;

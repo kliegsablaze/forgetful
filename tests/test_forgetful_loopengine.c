@@ -221,6 +221,36 @@ static void run_silence(audio_fx_api_v2_t *api, void *inst, long total_frames) {
 }
 
 
+
+/* Noise on a constant take: deviation of each sample from the local mean
+ * of the block. Skips nothing else, so it also sees the splice fade if
+ * you measure across it — measure blocks from the middle of a take. */
+static double measure_noise(audio_fx_api_v2_t *api, void *inst, int blocks) {
+    int16_t buf[BLOCK_FRAMES * 2];
+    static double sd[512];
+    if (blocks > 512) blocks = 512;
+    for (int b = 0; b < blocks; b++) {
+        fill_silence(buf, BLOCK_FRAMES);
+        api->process_block(inst, buf, BLOCK_FRAMES);
+        double sum = 0.0;
+        for (int i = 0; i < BLOCK_FRAMES * 2; i += 2) sum += buf[i];
+        double mean = sum / BLOCK_FRAMES;
+        double sq = 0.0;
+        for (int i = 0; i < BLOCK_FRAMES * 2; i += 2) {
+            double d = buf[i] - mean; sq += d * d;
+        }
+        sd[b] = sqrt(sq / BLOCK_FRAMES);
+    }
+    /* MEDIAN, not max: the two blocks holding the splice fade are a ramp
+     * across the whole sample range and swamp any average or peak. */
+    for (int i = 1; i < blocks; i++) {
+        double v = sd[i]; int j = i - 1;
+        while (j >= 0 && sd[j] > v) { sd[j + 1] = sd[j]; j--; }
+        sd[j + 1] = v;
+    }
+    return sd[blocks / 2];
+}
+
 /* Deterministic broadband source. A pure tone cannot show a lowpass at
  * all once the measurement is level-normalised — filtering a sine moves
  * its level, not its frequency — so anything testing Darken needs content
@@ -1069,6 +1099,20 @@ int main(void) {
             api->set_param(inst, "loopA_chaos", "0");
             api->set_param(inst, "loopA_saturation", "1");
             api->set_param(inst, "loopA_volume", "1");
+            /* Both ends of a take are now faded to silence so the loop
+             * splices without a click (TAKE_EDGE_FADE_S), so sample 0 is
+             * deliberately zero and can no longer stand in for "identity".
+             * Step past the fade and measure there instead. decay_rate is
+             * pushed out so the saturation chase over those extra samples
+             * stays well under the 1 LSB this check allows. */
+            api->set_param(inst, "loopA_decay_rate", "600");
+            {
+                int16_t skip[BLOCK_FRAMES * 2];
+                for (int b = 0; b < 4; b++) {
+                    fill_silence(skip, BLOCK_FRAMES);
+                    api->process_block(inst, skip, BLOCK_FRAMES);
+                }
+            }
 
             int16_t buf[BLOCK_FRAMES * 2];
             fill_silence(buf, BLOCK_FRAMES);
@@ -1421,60 +1465,43 @@ int main(void) {
     }
 
     /* ---------------------------------------------------------------
-     * test20: the flavours arrive as the take ages, they are not on from
-     * the first pass. Hiss is the clearest case to measure because it is
-     * the only one that is not part of the music: it is deliberately kept
-     * OUT of the memory multiply, so a loop that has decayed to near
-     * nothing should still be making noise, where before it faded out
-     * along with everything else.
+     * test20: Hiss ACCUMULATES onto the medium.
+     *
+     * It is a per-pass rate, added to the signal that gets written back,
+     * so noise printed on one pass is still there on the next and is
+     * added to again. The take gets noisier the longer it runs, with the
+     * knob untouched throughout.
+     *
+     * Replaces an assertion that Hiss was silent on a fresh take and only
+     * arrived with age. That was true of the age-scaled design and is
+     * deliberately not true now: age-coupling was removed when the
+     * write-back made the compounding intrinsic.
      * --------------------------------------------------------------- */
     {
         void *inst = api->create_instance(".", NULL);
         check(inst != NULL, "test20: create_instance");
-        api->set_param(inst, "loopA_decay_rate", "20");
-        record_full_buffer_loop_a_constant(api, inst, 16000);
-        api->set_param(inst, "loopA_hf_loss", "0");
+        api->set_param(inst, "loopA_decay_rate", "600");
+        api->set_param(inst, "input_routing", "A");
+        press_record(api, inst);
+        int16_t buf[BLOCK_FRAMES * 2];
+        for (int b = 0; b < 344; b++) {
+            fill_constant(buf, BLOCK_FRAMES, 12000);
+            api->process_block(inst, buf, BLOCK_FRAMES);
+        }
+        api->set_param(inst, "master_record", "STOP!");
+        api->set_param(inst, "loopA_volume", "1");
         api->set_param(inst, "loopA_chaos", "0");
         api->set_param(inst, "loopA_wow", "0");
+        api->set_param(inst, "loopA_hf_loss", "0");
         api->set_param(inst, "loopA_saturation", "0");
-        api->set_param(inst, "loopA_volume", "1");
-        api->set_param(inst, "loopA_hiss", "1");      /* first touch: snaps */
+        api->set_param(inst, "loopA_hiss", "1");
 
-        int16_t buf[BLOCK_FRAMES * 2];
-        /* Deviation from the take's own constant level IS the hiss, since
-         * every other stage is off and the content is DC. */
-        int32_t fresh_noise = 0, level_fresh = 0;
-        fill_silence(buf, BLOCK_FRAMES);
-        api->process_block(inst, buf, BLOCK_FRAMES);
-        for (int i = 0; i < BLOCK_FRAMES; i++) {
-            int32_t v = abs((int)buf[i * 2]);
-            if (v > level_fresh) level_fresh = v;
-        }
-        for (int i = 0; i < BLOCK_FRAMES; i++) {
-            int32_t d = abs(abs((int)buf[i * 2]) - level_fresh);
-            if (d > fresh_noise) fresh_noise = d;
-        }
-
-        /* now let it decay almost all the way */
-        run_silence(api, inst, (long)SAMPLE_RATE * 19);
-        int32_t old_peak = 0;
-        for (int b = 0; b < 8; b++) {
-            fill_silence(buf, BLOCK_FRAMES);
-            api->process_block(inst, buf, BLOCK_FRAMES);
-            for (int i = 0; i < BLOCK_FRAMES; i++) {
-                int32_t v = abs((int)buf[i * 2]);
-                if (v > old_peak) old_peak = v;
-            }
-        }
-
-        check(fresh_noise < 60,
-              "test20: Hiss at maximum is essentially silent on a FRESH take "
-              "(the knob sets where the loop ends up, not how it sounds now)");
-        check(old_peak > 200,
-              "test20: and a nearly-gone take is still audibly hissing, "
-              "because hiss is outside the memory multiply — before this it "
-              "faded away with the music it was supposed to outlive");
-
+        double n_early = measure_noise(api, inst, 344);
+        run_silence(api, inst, (long)SAMPLE_RATE * 30);
+        double n_late  = measure_noise(api, inst, 344);
+        check(n_late > n_early * 2.0,
+              "test20: the noise floor grows as the take runs — hiss printed "
+              "on one pass is read back and printed on again");
         api->destroy_instance(inst);
     }
 
@@ -1654,6 +1681,59 @@ int main(void) {
               "up without a hand on the fader");
         check(hi < first * 3.0,
               "test24: nor does it inflate; the level stays in a band");
+        api->destroy_instance(inst);
+    }
+
+    /* ---------------------------------------------------------------
+     * test25: the loop splice does not click.
+     *
+     * A take ends wherever the finger left it, so the buffer wraps from
+     * one arbitrary sample to another. Reported on device as "a pop when
+     * recording stops" — it is heard there because that is when playback
+     * begins, but it fires on EVERY pass. A 220 Hz take is chosen so the
+     * recorded length is not a whole number of cycles (period ~200.45
+     * samples), which is what puts the two ends out of step; a DC take
+     * would join itself and prove nothing.
+     * --------------------------------------------------------------- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        check(inst != NULL, "test25: create_instance");
+        api->set_param(inst, "loopA_decay_rate", "600");
+        api->set_param(inst, "input_routing", "A");
+        press_record(api, inst);
+        float phase = 0.0f;
+        int16_t tb[BLOCK_FRAMES * 2];
+        for (int b = 0; b < 60; b++) {
+            fill_tone(tb, BLOCK_FRAMES, 0.28f, 220.0f, &phase);
+            api->process_block(inst, tb, BLOCK_FRAMES);
+        }
+        api->set_param(inst, "master_record", "STOP!");
+        api->set_param(inst, "loopA_volume", "1");
+        api->set_param(inst, "loopA_hiss", "0");
+        api->set_param(inst, "loopA_chaos", "0");
+        api->set_param(inst, "loopA_wow", "0");
+        api->set_param(inst, "loopA_hf_loss", "0");
+        api->set_param(inst, "loopA_saturation", "0");
+
+        int worst = 0, prev = 0, have = 0;
+        for (int b = 0; b < 60 * 3; b++) {       /* three whole passes */
+            fill_silence(tb, BLOCK_FRAMES);
+            api->process_block(inst, tb, BLOCK_FRAMES);
+            for (int i = 0; i < BLOCK_FRAMES * 2; i += 2) {
+                if (have) {
+                    int d = (int)tb[i] - prev;
+                    if (d < 0) d = -d;
+                    if (d > worst) worst = d;
+                }
+                prev = (int)tb[i]; have = 1;
+            }
+        }
+        /* the tone's own slope at this level is ~282/sample; the splice
+         * step before this was ~8000 */
+        check(worst < 600,
+              "test25: the loop wraps without a click — both ends of the "
+              "take are faded to silence, so the splice is silence to "
+              "silence instead of an ~8000-count step every pass");
         api->destroy_instance(inst);
     }
 
