@@ -251,6 +251,30 @@ static double measure_noise(audio_fx_api_v2_t *api, void *inst, int blocks) {
     return sd[blocks / 2];
 }
 
+/* Pitch of whatever the module is putting out, from interpolated
+ * zero-crossings. Sub-sample accuracy matters here: counting whole
+ * crossings quantises badly enough to swamp a slow glide. */
+static double measure_pitch(audio_fx_api_v2_t *api, void *inst, int blocks) {
+    static double x[64 * BLOCK_FRAMES];
+    int16_t buf[BLOCK_FRAMES * 2];
+    long n = 0;
+    if (blocks > 64) blocks = 64;
+    for (int b = 0; b < blocks; b++) {
+        fill_silence(buf, BLOCK_FRAMES);
+        api->process_block(inst, buf, BLOCK_FRAMES);
+        for (int i = 0; i < BLOCK_FRAMES; i++) x[n++] = buf[i * 2];
+    }
+    double prev = 0.0; int have = 0; double sum = 0.0; long cnt = 0;
+    for (long i = 0; i + 1 < n; i++) {
+        if (x[i] < 0.0 && x[i + 1] >= 0.0 && x[i + 1] != x[i]) {
+            double pos = (double)i + (0.0 - x[i]) / (x[i + 1] - x[i]);
+            if (have) { sum += pos - prev; cnt++; }
+            prev = pos; have = 1;
+        }
+    }
+    return cnt ? (double)SAMPLE_RATE / (sum / (double)cnt) : 0.0;
+}
+
 /* Deterministic broadband source. A pure tone cannot show a lowpass at
  * all once the measurement is level-normalised — filtering a sine moves
  * its level, not its frequency — so anything testing Darken needs content
@@ -1710,6 +1734,55 @@ int main(void) {
               "reverb is fed by its own network, not by the send");
         check(later < first,
               "test27: and it decays rather than sustaining or growing");
+        api->destroy_instance(inst);
+    }
+
+    /* ---------------------------------------------------------------
+     * test28: a speed change GLIDES, over SPEED_GLIDE_SECONDS.
+     *
+     * Both halves matter. A hard cut to half speed is a click and a lurch,
+     * but a glide that never finishes is just as wrong, so this pins the
+     * arrival too.
+     * --------------------------------------------------------------- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        check(inst != NULL, "test28: create_instance");
+        api->set_param(inst, "loopA_decay_rate", "600");
+        api->set_param(inst, "input_routing", "A");
+        press_record(api, inst);
+        int16_t tb[BLOCK_FRAMES * 2];
+        float phase = 0.0f;
+        for (int b = 0; b < 400; b++) {
+            fill_tone(tb, BLOCK_FRAMES, 0.28f, 440.0f, &phase);
+            api->process_block(inst, tb, BLOCK_FRAMES);
+        }
+        api->set_param(inst, "master_record", "STOP!");
+        api->set_param(inst, "loopA_volume", "1");
+        api->set_param(inst, "loopA_hiss", "0");
+        api->set_param(inst, "loopA_chaos", "0");
+        api->set_param(inst, "loopA_wow", "0");
+        api->set_param(inst, "loopA_hf_loss", "0");
+        api->set_param(inst, "loopA_send", "0");
+
+        double at_rest = measure_pitch(api, inst, 40);
+        check(at_rest > 400.0 && at_rest < 480.0, "test28: starts near 440Hz");
+
+        api->set_param(inst, "loopA_speed", "1/2");
+        double just_after = measure_pitch(api, inst, 40);   /* ~120ms */
+        check(just_after > at_rest * 0.9,
+              "test28: it does not snap — a moment after the write the loop "
+              "is still close to where it was");
+
+        run_silence(api, inst, (long)(SAMPLE_RATE * 2));
+        double halfway = measure_pitch(api, inst, 40);
+        check(halfway < at_rest * 0.92 && halfway > at_rest * 0.55,
+              "test28: and it is genuinely on the way, not waiting to jump "
+              "at the end");
+
+        run_silence(api, inst, (long)(SAMPLE_RATE * 4));
+        double arrived = measure_pitch(api, inst, 40);
+        check(arrived > 210.0 && arrived < 230.0,
+              "test28: arrives an octave down, and settles there");
         api->destroy_instance(inst);
     }
 

@@ -358,6 +358,8 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * The threshold rises with age, so it keeps finding new material to eat
  * instead of converging after one pass. Soft-kneed (a squared ratio)
  * rather than switched, so nothing clicks. */
+#define SPEED_GLIDE_SECONDS   5.0f
+
 #define GATE_MAX_THRESHOLD    0.30f
 /* How much of a frame a single pass may remove. Without a floor the gain
  * goes straight to zero the moment a frame is under threshold, and since
@@ -800,7 +802,17 @@ typedef struct {
     int   warp_drift_countdown;
     float hiss_lp_l, hiss_lp_r;  /* hiss-coloring filter state, see HISS_COLOR_COEFF */
     float crackle_env;  /* VINYL click/pop envelope, see CRACKLE_DUST_MAX_PROB */
-    float speed_mul;   /* 0.25 / 0.5 / 1 / 2: read rate, so the loop shifts
+    /* Speed glides rather than jumping — a tape machine takes a moment to
+     * settle at a new rate, and a hard cut to half speed is a click and a
+     * lurch. Interpolated in LOG2 space, so the glide is a constant number
+     * of semitones per second: linear interpolation of the multiplier
+     * would spend most of its time near the top of the interval and
+     * arrive with a swoop. Advanced once per block — one octave over five
+     * seconds is 0.007 semitones per block, far below anything audible as
+     * a step, and it keeps an exp2f out of the sample loop. */
+    float speed_log_cur, speed_log_target, speed_log_step;
+    float speed_eff;   /* exp2(speed_log_cur), what the read head uses */
+    float speed_mul;   /* 0.25 / 0.5 / 1 / 2: the SELECTED rate, so the loop shifts
                         * by octaves and its pass takes proportionally
                         * longer or shorter. Applied as a multiplier ON TOP
                         * of Warp's modulation rather than replacing it, so
@@ -1129,6 +1141,7 @@ static void init_loop(loop_engine_t *loop, uint32_t rng_seed) {
     /* MUST come after the memset: zero here means a read rate of zero and
      * no loop ever plays at all. */
     loop->speed_mul = 1.0f;
+    loop->speed_eff = 1.0f;   /* log_cur/target are 0 from the memset = 1x */
     /* Age starts FULL (300s, the max — was 180s/3min); Warp/Darken/Hiss/
      * VINYL start at minimum, UNTOUCHED (flavor_ramp_t's zeroed target/step/
      * touched from the memset above is exactly that — nothing to set here).
@@ -1214,6 +1227,14 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
         loop_engine_t *loop = &s->loops[li];
         if (loop->state != LOOP_LOOPING) continue;
         float age = 1.0f - clampf(loop->memory, 0.0f, 1.0f);
+
+        if (loop->speed_log_cur != loop->speed_log_target) {
+            float move = loop->speed_log_step * (float)frames;
+            float diff = loop->speed_log_target - loop->speed_log_cur;
+            if (fabsf(diff) <= move || move <= 0.0f) loop->speed_log_cur = loop->speed_log_target;
+            else loop->speed_log_cur += (diff > 0.0f) ? move : -move;
+            loop->speed_eff = exp2f(loop->speed_log_cur);
+        }
 
         loop->warp_amt = flavour_reach(loop->applied_wow, age);
         /* age SQUARED: linear made the gate bite hard while the take was
@@ -1330,7 +1351,7 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                              loop->warp_drift * DRIFT_MOD_DEPTH) * w +
                             sinf(loop->flutter_phase) * FLUTTER_MOD_DEPTH * w * w;
                 double speed = 1.0 + mod;
-                speed *= (double)loop->speed_mul;
+                speed *= (double)loop->speed_eff;
 
                 loop->wow_phase += 2.0f * PI_F * WOW_RATE_HZ / SAMPLE_RATE;
                 if (loop->wow_phase >= 2.0f * PI_F) loop->wow_phase -= 2.0f * PI_F;
@@ -1895,6 +1916,9 @@ static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *
             int ix = atoi(val);
             loop->speed_mul = by_index[(ix < 0) ? 0 : (ix > 3) ? 3 : ix];
         }
+        loop->speed_log_target = log2f(loop->speed_mul);
+        loop->speed_log_step   = fabsf(loop->speed_log_target - loop->speed_log_cur) /
+                                 (SPEED_GLIDE_SECONDS * SAMPLE_RATE);
         return;
     } else if (strcmp(suffix, "erase") == 0) {
         /* gesture-test's pattern: fire on anything that isn't the idle
@@ -2011,8 +2035,15 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
             if (json_get_float(val, key_buf, &v) == 0) s->loops[i].crackle_ramp.target = clampf(v, 0.0f, 1.0f);
             snprintf(key_buf, sizeof(key_buf), "loop%c_speed", LOOP_LETTERS[i]);
             if (json_get_float(val, key_buf, &v) == 0)
+            {
                 s->loops[i].speed_mul = (v <= 0.3f) ? 0.25f : (v <= 0.6f) ? 0.5f
                                       : (v >= 1.5f) ? 2.0f : 1.0f;
+                /* a restored set starts AT its speed, it does not glide up
+                 * to it from 1x while you listen */
+                s->loops[i].speed_log_cur = s->loops[i].speed_log_target =
+                    log2f(s->loops[i].speed_mul);
+                s->loops[i].speed_eff = s->loops[i].speed_mul;
+            }
         }
         return;
     }
