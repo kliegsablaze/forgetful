@@ -204,7 +204,14 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
 #define WOW_MOD_DEPTH      0.07f
 #define FLUTTER_MOD_DEPTH  0.045f
 
-#define HISS_CEILING          0.014625f /* was 0.045 -> 0.02925 (65%) -> this (2026-08-25: "way too loud" again — halved a second time) */
+#define HISS_CEILING          0.040f /* Raised back up 2026-08-27, when hiss
+                                      * stopped being constant and started
+                                      * scaling with `age`: this is now the
+                                      * level at FULL decay with the knob
+                                      * maxed, not the level all the way
+                                      * through. Was 0.045 -> 0.02925 ->
+                                      * 0.014625, two halvings chasing a
+                                      * problem that was placement, not gain. */
 /* One-pole coefficient for the hiss-coloring highpass (see the hiss stage
  * comment) — ~1kHz-ish corner, low enough to strip the noise's rumble,
  * high enough to keep it sounding like noise rather than a whistle. */
@@ -796,10 +803,22 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
             }
 
             case LOOP_LOOPING: {
+                /* How far this take has decayed, 0 on a fresh one and 1 as
+                 * it disappears. Warp, Darken and Hiss are all scaled by it
+                 * (2026-08-27) so their knobs set where the loop ENDS UP
+                 * rather than how it sounds right now: a new take plays
+                 * back close to clean and falls apart as it ages, which is
+                 * the arc the Disintegration Loops have and the old
+                 * always-on-from-the-first-pass behaviour did not.
+                 *
+                 * Frozen loops hold their `age` too, since memory is what
+                 * stops — a frozen take stays exactly as ruined as it was. */
+                float age = 1.0f - clampf(loop->memory, 0.0f, 1.0f);
+
                 /* wow/flutter-modulated read speed */
                 float mod = (sinf(loop->wow_phase) * WOW_MOD_DEPTH +
                              sinf(loop->flutter_phase) * FLUTTER_MOD_DEPTH) *
-                            loop->applied_wow;
+                            loop->applied_wow * age;
                 double speed = 1.0 + mod;
 
                 loop->wow_phase += 2.0f * PI_F * WOW_RATE_HZ / SAMPLE_RATE;
@@ -901,7 +920,7 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * all driven by the SAME applied_hf_loss chase value, so
                  * presence/darkness/length build together off one knob.
                  * wet_amount=0 is an exact raw_l/raw_r passthrough. */
-                float wet_amount = clampf(loop->applied_hf_loss, 0.0f, 1.0f);
+                float wet_amount = clampf(loop->applied_hf_loss, 0.0f, 1.0f) * age;
                 float damp1 = wet_amount * 0.4f;
                 float damp2 = 1.0f - damp1;
                 float feedback = REVERB_FEEDBACK_MIN + wet_amount * (REVERB_FEEDBACK_MAX - REVERB_FEEDBACK_MIN);
@@ -949,13 +968,33 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * entirely turn-driven now (flavor timing model v2, see
                  * HISS_CHASE_RATE_SCALE's old location) — Hiss has no
                  * special-cased rate of its own any more. */
-                float hiss_amount = clampf(loop->applied_hiss, 0.0f, 1.0f) * HISS_CEILING;
+                /* Hiss is the one flavour that is NOT part of the music,
+                 * and that is the whole point of it. It used to be summed
+                 * in here and then multiplied by `memory` along with
+                 * everything else, so the noise floor faded out in lockstep
+                 * with the take — at 20% memory you heard a quiet mix with
+                 * its hiss intact, rather than a loop disappearing INTO
+                 * hiss. Reported twice as "too loud", and halved twice
+                 * (0.045 -> 0.029 -> 0.0146) without fixing it, because the
+                 * complaint was never really about level: it was audible at
+                 * the start, where there should be none, and gone by the
+                 * end, where it should be all that is left.
+                 *
+                 * So it is kept out of the memory multiply below and scaled
+                 * by `age` instead — silent on a fresh take, and the last
+                 * thing standing on a dying one. HISS_CEILING went back up
+                 * accordingly: it is now only ever reached at full decay
+                 * with the knob at maximum. */
+                float hiss_amount = clampf(loop->applied_hiss, 0.0f, 1.0f)
+                                    * HISS_CEILING * age;
                 float noise_l = rng_bipolar(&loop->rng_state);
                 float noise_r = rng_bipolar(&loop->rng_state);
                 loop->hiss_lp_l += HISS_COLOR_COEFF * (noise_l - loop->hiss_lp_l);
                 loop->hiss_lp_r += HISS_COLOR_COEFF * (noise_r - loop->hiss_lp_r);
-                float hiss_l = sat_l + (noise_l - loop->hiss_lp_l) * hiss_amount;
-                float hiss_r = sat_r + (noise_r - loop->hiss_lp_r) * hiss_amount;
+                float hiss_only_l = (noise_l - loop->hiss_lp_l) * hiss_amount;
+                float hiss_only_r = (noise_r - loop->hiss_lp_r) * hiss_amount;
+                float hiss_l = sat_l;
+                float hiss_r = sat_r;
 
                 /* 4. VINYL crackle — mixed in ADDITIVELY right alongside
                  * Hiss, not a post-hoc gate (see CRACKLE_DUST_MAX_PROB for
@@ -996,8 +1035,8 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * flavor's applied_* target above via the chase, and erasing
                  * is a deliberate "let go of this now" fade-to-silence, not
                  * an accelerated version of the loop's own aging. */
-                wet_l = crackle_l * loop->memory * loop->erase_fade_gain;
-                wet_r = crackle_r * loop->memory * loop->erase_fade_gain;
+                wet_l = (crackle_l * loop->memory + hiss_only_l) * loop->erase_fade_gain;
+                wet_r = (crackle_r * loop->memory + hiss_only_r) * loop->erase_fade_gain;
 
                 /* 6. Master-page volume is applied once, after summing all
                  * four loops' wet below — not here per-loop-in-isolation,

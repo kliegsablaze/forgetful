@@ -1208,7 +1208,6 @@ int main(void) {
      * predict exact reverb output samples. ---- */
     {
         const int16_t CONST_VALUE = 16000;
-        const float SAMPLE_F = (float)CONST_VALUE / 32768.0f;
 
         void *inst = api->create_instance(".", NULL);
         check(inst != NULL, "test17: create_instance");
@@ -1225,8 +1224,30 @@ int main(void) {
         api->set_param(inst, "loopA_saturation", "0");
         api->set_param(inst, "loopA_volume", "1");
 
-        int32_t identity = lroundf(SAMPLE_F * 32767.0f);
         int16_t buf[BLOCK_FRAMES * 2];
+
+        /* Age the take to roughly half gone before probing Darken. Since
+         * 2026-08-27 every flavour is scaled by `age` (1 - memory), so on a
+         * FRESH take the wash is zero by design and could not report on the
+         * ramp mechanic at all — this test measured the wash as a proxy for
+         * applied_hf_loss, and the proxy needs the loop to have decayed
+         * enough for the stage to be doing something. decay_rate is 20s
+         * here, so 10s leaves memory ~= 0.5. */
+        run_silence(api, inst, (long)SAMPLE_RATE * 10);
+
+        /* The un-darkened level, measured rather than derived: the content
+         * is a known constant, but it is now scaled by whatever memory has
+         * decayed to, so the old SAMPLE_F * 32767 identity no longer holds. */
+        fill_silence(buf, BLOCK_FRAMES);
+        api->process_block(inst, buf, BLOCK_FRAMES);
+        int32_t identity = 0;
+        for (int i = 0; i < BLOCK_FRAMES; i++) {
+            int32_t v = abs((int)buf[i * 2]);
+            if (v > identity) identity = v;
+        }
+        check(identity > 1000,
+              "test17: aged take still has a clearly measurable level to "
+              "compare the wash against");
 
         /* FIRST touch on Darken: jumps applied_hf_loss to 0.9 instantly. */
         api->set_param(inst, "loopA_hf_loss", "0.9");
@@ -1234,7 +1255,7 @@ int main(void) {
         api->process_block(inst, buf, BLOCK_FRAMES);
         int32_t max_dev_1 = 0;
         for (int i = 0; i < BLOCK_FRAMES; i++) {
-            int32_t dev = abs((int)buf[i * 2] - identity);
+            int32_t dev = abs(abs((int)buf[i * 2]) - identity);
             if (dev > max_dev_1) max_dev_1 = dev;
         }
         check(max_dev_1 > 500,
@@ -1251,7 +1272,7 @@ int main(void) {
         api->process_block(inst, buf, BLOCK_FRAMES);
         int32_t max_dev_2 = 0;
         for (int i = 0; i < BLOCK_FRAMES; i++) {
-            int32_t dev = abs((int)buf[i * 2] - identity);
+            int32_t dev = abs(abs((int)buf[i * 2]) - identity);
             if (dev > max_dev_2) max_dev_2 = dev;
         }
         check(max_dev_2 > 500,
@@ -1360,6 +1381,64 @@ int main(void) {
         api->get_param(inst, "loopA_erase", tr, sizeof(tr));
         check(ov[0] == '-', "test19: ECHO reaches '-' once the loop is gone");
         check(strcmp(tr, "ERASE") == 0, "test19: trigger returns to ERASE once done");
+
+        api->destroy_instance(inst);
+    }
+
+    /* ---------------------------------------------------------------
+     * test20: the flavours arrive as the take ages, they are not on from
+     * the first pass. Hiss is the clearest case to measure because it is
+     * the only one that is not part of the music: it is deliberately kept
+     * OUT of the memory multiply, so a loop that has decayed to near
+     * nothing should still be making noise, where before it faded out
+     * along with everything else.
+     * --------------------------------------------------------------- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        check(inst != NULL, "test20: create_instance");
+        api->set_param(inst, "loopA_decay_rate", "20");
+        record_full_buffer_loop_a_constant(api, inst, 16000);
+        api->set_param(inst, "loopA_hf_loss", "0");
+        api->set_param(inst, "loopA_chaos", "0");
+        api->set_param(inst, "loopA_wow", "0");
+        api->set_param(inst, "loopA_saturation", "0");
+        api->set_param(inst, "loopA_volume", "1");
+        api->set_param(inst, "loopA_hiss", "1");      /* first touch: snaps */
+
+        int16_t buf[BLOCK_FRAMES * 2];
+        /* Deviation from the take's own constant level IS the hiss, since
+         * every other stage is off and the content is DC. */
+        int32_t fresh_noise = 0, level_fresh = 0;
+        fill_silence(buf, BLOCK_FRAMES);
+        api->process_block(inst, buf, BLOCK_FRAMES);
+        for (int i = 0; i < BLOCK_FRAMES; i++) {
+            int32_t v = abs((int)buf[i * 2]);
+            if (v > level_fresh) level_fresh = v;
+        }
+        for (int i = 0; i < BLOCK_FRAMES; i++) {
+            int32_t d = abs(abs((int)buf[i * 2]) - level_fresh);
+            if (d > fresh_noise) fresh_noise = d;
+        }
+
+        /* now let it decay almost all the way */
+        run_silence(api, inst, (long)SAMPLE_RATE * 19);
+        int32_t old_peak = 0;
+        for (int b = 0; b < 8; b++) {
+            fill_silence(buf, BLOCK_FRAMES);
+            api->process_block(inst, buf, BLOCK_FRAMES);
+            for (int i = 0; i < BLOCK_FRAMES; i++) {
+                int32_t v = abs((int)buf[i * 2]);
+                if (v > old_peak) old_peak = v;
+            }
+        }
+
+        check(fresh_noise < 60,
+              "test20: Hiss at maximum is essentially silent on a FRESH take "
+              "(the knob sets where the loop ends up, not how it sounds now)");
+        check(old_peak > 200,
+              "test20: and a nearly-gone take is still audibly hissing, "
+              "because hiss is outside the memory multiply — before this it "
+              "faded away with the music it was supposed to outlive");
 
         api->destroy_instance(inst);
     }
