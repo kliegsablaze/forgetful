@@ -124,6 +124,13 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
 #define FORGOTTEN_DISPLAY_MS  400   /* how long the UI may still report
                                      * "Forgotten" after the engine has
                                      * already reset to IDLE */
+#define OVERDUB_MAX_FILL      64 /* cap on the gap-fill span, so a read-head
+                                  * jump can never smear one input sample
+                                  * across the whole take. */
+#define OVERDUB_FADE_SECONDS  0.008f /* 8ms in/out ramp on the overdub write
+                                      * gain. Long enough to kill the step
+                                      * edge, short enough that the front of
+                                      * a note you punch in on survives. */
 #define ERASE_FADE_SECONDS    10.0f /* erase on a LOOPING loop fades out over
                                       * this long, then clears — not an
                                       * instant cut. Idle/Recording/Forgotten
@@ -454,6 +461,20 @@ typedef struct {
                           * block. Does NOT touch memory, the flavor knobs,
                           * or reverb/hiss state — only reset_take() (a real
                           * erase, not overdub) resets those. */
+    float overdub_gain;  /* what the overdub write is actually scaled by,
+                          * chasing `overdubbing` over OVERDUB_FADE_SECONDS
+                          * instead of stepping to it. See the overdub-write
+                          * block: the toggle is a button press landing on an
+                          * arbitrary sample, and writing full-amplitude
+                          * input from that sample on puts a step edge INTO
+                          * the take, which then clicks once per pass
+                          * forever. */
+    int   overdub_last_idx; /* last buffer index the overdub wrote, or -1.
+                          * With Warp up, `speed` != 1 so consecutive output
+                          * samples can land on the same idx0 (writing the
+                          * same frame twice — doubling it) or skip past one
+                          * (leaving a gap the write never fills). Both are
+                          * broadband edges. See the overdub-write block. */
 
     /* Darken's reverb wash — see the REVERB_NUM_COMBS comment. Buffers are
      * heap-allocated per instance (v2_create_instance) sized exactly to
@@ -613,6 +634,8 @@ static void reset_take(loop_engine_t *loop) {
     loop->erasing = 0;
     loop->erase_fade_gain = 1.0f;
     loop->overdubbing = 0;
+    loop->overdub_gain = 0.0f;
+    loop->overdub_last_idx = -1;
     loop->applied_wow = loop->applied_hf_loss = loop->applied_hiss = 0.0f;
     loop->applied_saturation = loop->applied_crackle = 0.0f;
     loop->wow_ramp = loop->hf_loss_ramp = loop->hiss_ramp = loop->crackle_ramp = (flavor_ramp_t){0};
@@ -623,6 +646,19 @@ static void reset_take(loop_engine_t *loop) {
 /* Shared by all three close triggers: a manual master_record press, buffer-
  * full, and a routing change away from this loop (see set_param's
  * "input_routing" and "master_record"). */
+/* One overdub frame, added into the take and clipped in int32 space —
+ * same convention as mix_dry_wet. Split out because the overdub write has
+ * to be able to fill a span of frames, not just the one under the read
+ * head; see the overdub-write block. */
+static inline void overdub_add(loop_engine_t *loop, int idx, int16_t l, int16_t r) {
+    int32_t nl = (int32_t)loop->buffer[idx].l + (int32_t)l;
+    int32_t nr = (int32_t)loop->buffer[idx].r + (int32_t)r;
+    if (nl > 32767) nl = 32767; else if (nl < -32768) nl = -32768;
+    if (nr > 32767) nr = 32767; else if (nr < -32768) nr = -32768;
+    loop->buffer[idx].l = (int16_t)nl;
+    loop->buffer[idx].r = (int16_t)nr;
+}
+
 static void close_recording(loop_engine_t *loop) {
     if (loop->write_head < MIN_RECORDED_FRAMES) {
         /* too short to be a usable take — discard, don't loop a click */
@@ -641,6 +677,8 @@ static void close_recording(loop_engine_t *loop) {
     loop->crackle_env = 0.0f;
     loop->frozen = 0;
     loop->overdubbing = 0;
+    loop->overdub_gain = 0.0f;
+    loop->overdub_last_idx = -1;
     reverb_clear_loop(loop);
     /* Every genuinely NEW take (this function only ever closes a fresh
      * LOOP_RECORDING, never fires for an overdub — see the "overdub" branch
@@ -787,17 +825,64 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * handler); only a real erase resets those. Writes to idx0
                  * only (not interpolated across idx0/idx1) and hard-clips
                  * in int32 space, same convention as mix_dry_wet — simplest
-                 * correct mixing, not spectrally shaped. With Warp active,
-                 * `speed` != 1.0 so idx0 can repeat or skip samples across a
-                 * pass — a known first-pass rough edge, most relevant once
-                 * Warp is turned up. */
-                if (loop->overdubbing) {
-                    int32_t new_l = (int32_t)loop->buffer[idx0].l + (int32_t)raw_dry_l;
-                    int32_t new_r = (int32_t)loop->buffer[idx0].r + (int32_t)raw_dry_r;
-                    if (new_l > 32767) new_l = 32767; else if (new_l < -32768) new_l = -32768;
-                    if (new_r > 32767) new_r = 32767; else if (new_r < -32768) new_r = -32768;
-                    loop->buffer[idx0].l = (int16_t)new_l;
-                    loop->buffer[idx0].r = (int16_t)new_r;
+                 * correct mixing, not spectrally shaped.
+                 *
+                 * Three things here exist to stop the overdub putting
+                 * clicks into the take (reported on device 2026-08-27).
+                 * All three write edges INTO the buffer, so they are
+                 * permanent and repeat once per pass — which is what made
+                 * them obvious:
+                 *
+                 *   1. `overdub_gain` ramps rather than switching. The
+                 *      toggle lands on an arbitrary sample; writing full
+                 *      input from that sample on is a step edge.
+                 *   2. Every frame between the last written index and this
+                 *      one is written, not just idx0. With Warp up, speed
+                 *      != 1: at speed < 1 the same idx0 comes round twice
+                 *      and got the input added TWICE; at speed > 1 an index
+                 *      was skipped entirely, so a frame of the overdub was
+                 *      simply missing. Both read as grit.
+                 *   3. A skipped span is filled with the same sample rather
+                 *      than left alone, so the overdub stays continuous
+                 *      across the gap instead of stepping over it.
+                 *
+                 * The loop seam is NOT crossfaded — an overdub that runs
+                 * past the end of the take wraps and lands on top of its own
+                 * beginning, which is the behaviour a tape loop has. */
+                {
+                    float g_target = loop->overdubbing ? 1.0f : 0.0f;
+                    float g_step   = 1.0f / (OVERDUB_FADE_SECONDS * SAMPLE_RATE);
+                    if (loop->overdub_gain < g_target) {
+                        loop->overdub_gain += g_step;
+                        if (loop->overdub_gain > g_target) loop->overdub_gain = g_target;
+                    } else if (loop->overdub_gain > g_target) {
+                        loop->overdub_gain -= g_step;
+                        if (loop->overdub_gain < g_target) loop->overdub_gain = g_target;
+                    }
+                }
+                if (loop->overdub_gain > 0.0f) {
+                    int16_t add_l = (int16_t)(raw_dry_l * loop->overdub_gain);
+                    int16_t add_r = (int16_t)(raw_dry_r * loop->overdub_gain);
+                    int from = loop->overdub_last_idx;
+                    int span = (from < 0) ? 0
+                             : (idx0 - from + loop->recorded_length)
+                                   % loop->recorded_length;
+                    /* span == 0 with a valid `from` means the read head has
+                     * not reached a new frame yet (speed < 1) — the frame is
+                     * already written, and adding to it again is exactly the
+                     * doubling this block exists to stop. A span past the cap
+                     * is a jump, not a skip: write only where we are. */
+                    if (from < 0 || span > OVERDUB_MAX_FILL) {
+                        overdub_add(loop, idx0, add_l, add_r);
+                    } else {
+                        for (int k = 1; k <= span; k++) {
+                            overdub_add(loop, (from + k) % loop->recorded_length,
+                                        add_l, add_r);
+                        }
+                    }
+                    loop->overdub_last_idx = idx0;
+                } else {
+                    loop->overdub_last_idx = -1;
                 }
 
                 float raw_l = (loop->buffer[idx0].l * (1.0f - frac) + loop->buffer[idx1].l * frac) / 32768.0f;
@@ -1121,6 +1206,19 @@ static char loop_status_char(const loop_engine_t *loop, uint64_t total_frames) {
     if (loop->overdubbing) {
         return 'O';
     }
+    /* An erase outranks frozen: erasing a frozen loop is the one case
+     * where `frozen` is still set but the thing you want to watch is the
+     * fade, not the freeze. Counts down on erase_fade_gain rather than
+     * memory, so the digit runs the 10s of ERASE_FADE_SECONDS instead of
+     * the minutes of decay_rate — the same countdown, sped up to the time
+     * it now actually takes to go. Without this the character sat on
+     * whatever it read when erase fired and never moved again. */
+    if (loop->erasing) {
+        int e = (int)(loop->erase_fade_gain * 10.0f);
+        if (e > 9) e = 9;
+        if (e < 0) e = 0;
+        return (char)('0' + e);
+    }
     if (loop->frozen) {
         return 'F';
     }
@@ -1216,14 +1314,22 @@ static int loop_get_param(const loop_engine_t *loop, uint64_t total_frames, cons
     if (strcmp(suffix, "saturation") == 0)  return snprintf(buf, len, "%.3f", loop->saturation);
     if (strcmp(suffix, "chaos") == 0)       return snprintf(buf, len, "%.3f", loop->crackle_ramp.target);
     if (strcmp(suffix, "erase") == 0) {
-        /* Always "ERASE" (2026-08-25, was always "-") — the held-knob
-         * header for a write-only trigger otherwise just showed the idle
-         * spelling forever, unlike every other trigger on this module
-         * (master_record/master_freeze), which say what they DO. Not
-         * state-aware on purpose: "ERASING" (7 chars) would blow the same
-         * 5-char budget PLAYING/RELIVE/AGEING already hit, and loopX_status
-         * already carries "Erasing..." as its own, unconstrained full-text
-         * line for that case. */
+        /* "ERASE" at rest (2026-08-25, was always "-"), "ERASING n" while
+         * one is running (2026-08-27), with the same digit ECHO shows for
+         * this loop so the two readouts agree.
+         *
+         * The earlier note here ruled "ERASING" out on a 5-char budget.
+         * That budget is LABEL_CHARS, which clips the grid LABEL under the
+         * icon — it does not apply to the value: erase is access "write",
+         * so its resting cell draws the trigger glyph and no text at all,
+         * and the only place this string appears is the touched header,
+         * which is a full 128px band. */
+        if (loop->erasing) {
+            int e = (int)(loop->erase_fade_gain * 10.0f);
+            if (e > 9) e = 9;
+            if (e < 0) e = 0;
+            return snprintf(buf, len, "ERASING %d", e);
+        }
         return snprintf(buf, len, "ERASE");
     }
     if (strcmp(suffix, "status") == 0) {
@@ -1413,12 +1519,18 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
     if (strcmp(key, "master_freeze") == 0) {
         /* Rebuilt 2026-08-25 onto the same "next press" convention as
          * master_record (see its comment): FREEZE while unfrozen (next
-         * press freezes it), AGING while frozen (next press unfreezes it,
-         * resuming aging). Replaces the earlier three-way FROZEN/AGEING/AGE
-         * split, which read as "what's happening now" and needed the
-         * loop's own state as well as `frozen` to pick a word — this needs
-         * only `frozen`. */
-        return snprintf(buf, len, s->loops[s->input_routing].frozen ? "AGING" : "FREEZE");
+         * FROZEN while frozen, AGING while not — what the loop is DOING,
+         * not what the next press would do.
+         *
+         * This deliberately breaks the next-action convention REC still
+         * follows, on device feedback 2026-08-27. The two are not the same
+         * kind of control: REC's cycle has four steps and no readout of its
+         * own, so naming the next action is the only way to know where in
+         * the cycle you are. Freeze is a two-state toggle whose state is
+         * ALREADY on screen as ECHO's `F`, so next-action naming made the
+         * header contradict the character right beside it — the loop
+         * showing `F` had a knob saying AGING. */
+        return snprintf(buf, len, s->loops[s->input_routing].frozen ? "FROZEN" : "AGING");
     }
 
     int li;

@@ -1082,11 +1082,13 @@ int main(void) {
         check(sscanf(s, "Looping - %d%% (%31[^)])", &pct_before, word) == 2, "test15: status line parses before freeze");
 
         /* Readout rebuilt 2026-08-25 onto "what will the NEXT press do":
-         * AGING once frozen (next press would unfreeze, resuming aging) —
-         * was FROZEN under the old "what's happening now" scheme. */
+         * FROZEN once frozen: this readout names the CURRENT state, not
+         * the next press, unlike master_record. Reverted to "what's
+         * happening now" 2026-08-27 — next-action naming made the header
+         * contradict ECHO's `F` for the same loop. */
         api->set_param(inst, "master_freeze", "Freeze!");
-        check(strcmp(freeze_readout(api, inst), "AGING") == 0,
-              "test15: master_freeze reads AGING once pressed");
+        check(strcmp(freeze_readout(api, inst), "FROZEN") == 0,
+              "test15: master_freeze reads FROZEN once pressed");
 
         /* Run well past when it would otherwise have reached Forgotten
          * (decay_rate=3s, already ~1s in — without freeze this easily
@@ -1101,11 +1103,11 @@ int main(void) {
               "test15: memory percentage is unchanged after 5s frozen (was stuck at the frame it froze on)");
 
         /* Unfreeze: decay resumes and the loop eventually reaches Forgotten.
-         * Readout is FREEZE once unfrozen (next press would freeze it
+         * Readout is AGING once unfrozen (that is what it is doing
          * again). */
         api->set_param(inst, "master_freeze", "Freeze!");
-        check(strcmp(freeze_readout(api, inst), "FREEZE") == 0,
-              "test15: master_freeze reads 'FREEZE' again once resumed");
+        check(strcmp(freeze_readout(api, inst), "AGING") == 0,
+              "test15: master_freeze reads 'AGING' again once resumed");
 
         long budget = TEST_DECAY_FRAMES(3) + BLOCK_FRAMES * 8;
         long advanced = 0;
@@ -1257,6 +1259,107 @@ int main(void) {
               "does not snap either — the wash is still clearly present one "
               "block later, proving it ramps over remaining time rather than "
               "jumping on every write");
+
+        api->destroy_instance(inst);
+    }
+
+    /* ---------------------------------------------------------------
+     * test18: the overdub write does not put a step edge into the take.
+     *
+     * Overdubs a CONSTANT level onto a silent take, keeps feeding it past
+     * the toggle, then reads the loop back. Whatever the overdub wrote is
+     * now IN the buffer and repeats every pass, so a step at the toggle is
+     * a permanent click, which is exactly what was reported on device
+     * 2026-08-27. Before the fade-in the transition was a single-sample
+     * 0 -> ~3200 jump; it is now spread over OVERDUB_FADE_SECONDS.
+     * --------------------------------------------------------------- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        check(inst != NULL, "test18: create_instance");
+        api->set_param(inst, "input_routing", "A");
+        api->set_param(inst, "loopA_decay_rate", "300");
+        api->set_param(inst, "loopA_hiss", "0");
+        api->set_param(inst, "loopA_chaos", "0");
+        api->set_param(inst, "loopA_hf_loss", "0");
+        api->set_param(inst, "loopA_saturation", "0");
+        api->set_param(inst, "loopA_wow", "0");
+
+        press_record(api, inst);
+        run_silence(api, inst, BLOCK_FRAMES * 60);
+        api->set_param(inst, "master_record", "STOP!");
+
+        api->set_param(inst, "master_record", "DUB!");
+        run_constant(api, inst, BLOCK_FRAMES * 20, 4000);
+        api->set_param(inst, "master_record", "PLAY!");
+        run_constant(api, inst, BLOCK_FRAMES * 5, 4000);
+
+        /* read the take back; skip the first pass so we see what was
+         * actually committed to the buffer, not the live overdub */
+        int16_t buf[BLOCK_FRAMES * 2];
+        int worst = 0, prev = 0, have_prev = 0;
+        for (int b = 0; b < 240; b++) {
+            fill_silence(buf, BLOCK_FRAMES);
+            api->process_block(inst, buf, BLOCK_FRAMES);
+            if (b < 63) continue;
+            for (int i = 0; i < BLOCK_FRAMES * 2; i += 2) {
+                if (have_prev) {
+                    int d = (int)buf[i] - prev;
+                    if (d < 0) d = -d;
+                    if (d > worst) worst = d;
+                }
+                prev = (int)buf[i];
+                have_prev = 1;
+            }
+        }
+        check(worst < 400,
+              "test18: overdub toggle leaves no step edge in the take "
+              "(worst adjacent-sample jump well under the ~3200 the "
+              "un-ramped write used to burn in)");
+
+        api->destroy_instance(inst);
+    }
+
+    /* ---------------------------------------------------------------
+     * test19: an erase counts DOWN, on ECHO and on the trigger itself.
+     * Before 2026-08-27 both sat on whatever they read when erase fired.
+     * --------------------------------------------------------------- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        check(inst != NULL, "test19: create_instance");
+        record_full_buffer_loop_a_constant(api, inst, 8000);
+        api->set_param(inst, "loopA_erase", "Erase!");
+
+        char ov[16], tr[32];
+        int seen_digit = 0, seen_erasing = 0, descends = 1, last = 10;
+        int distinct = 0, prev_digit = -1;
+        for (int step = 0; step < 12; step++) {
+            run_silence(api, inst, (long)SAMPLE_RATE);   /* 1 second */
+            api->get_param(inst, "master_loops_overview", ov, sizeof(ov));
+            api->get_param(inst, "loopA_erase", tr, sizeof(tr));
+            if (ov[0] >= '0' && ov[0] <= '9') {
+                int d = ov[0] - '0';
+                seen_digit++;
+                if (d > last) descends = 0;
+                last = d;
+                if (d != prev_digit) { distinct++; prev_digit = d; }
+            }
+            if (strncmp(tr, "ERASING", 7) == 0) seen_erasing++;
+        }
+        /* `distinct`, not just `seen_digit`: before the fix ECHO fell
+         * through to the memory decile, which is FROZEN during an erase, so
+         * it read a constant "9" the whole way down. A constant trivially
+         * satisfies both "is a digit" and "never increases" — only the
+         * number of DISTINCT values separates a countdown from a stuck
+         * character. */
+        check(distinct >= 5, "test19: ECHO's digit actually moves while erasing "
+                             "(not stuck on one value for the whole fade)");
+        check(seen_digit >= 5, "test19: ECHO shows a digit while erasing");
+        check(descends, "test19: and that digit only ever counts down");
+        check(seen_erasing >= 5, "test19: the erase trigger reads ERASING n meanwhile");
+        api->get_param(inst, "master_loops_overview", ov, sizeof(ov));
+        api->get_param(inst, "loopA_erase", tr, sizeof(tr));
+        check(ov[0] == '-', "test19: ECHO reaches '-' once the loop is gone");
+        check(strcmp(tr, "ERASE") == 0, "test19: trigger returns to ERASE once done");
 
         api->destroy_instance(inst);
     }
