@@ -266,6 +266,29 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * constant-density) clicks", the second half is "loud, AND getting
  * busier". See the LOOPING case's VINYL stage for the actual volume/
  * density split. First-pass constants, not confirmed by listening. */
+/* ---- VINYL dropouts: the medium losing material ----------------------
+ * Crackle adds noise ON TOP of the take. Dropouts take the take AWAY, and
+ * that is the half that actually sounds like the Disintegration Loops: a
+ * tape shedding oxide does not get noisier, it gets HOLES, and what you
+ * end up listening to is the gaps between what is left.
+ *
+ * These are written INTO the buffer, not applied at the output, so they
+ * accumulate: every pass can punch a new hole and deepen an old one, and
+ * none of it comes back. That is the point, and it is the only
+ * irreversible thing on the module besides Erase — Freeze stops them,
+ * exactly as it stops decay, so a frozen take stays as ruined as it was.
+ *
+ * The cursor advances one sample per tick INDEPENDENTLY of the read head.
+ * Attenuating "wherever idx0 is" would leave gaps whenever Warp pushes
+ * speed above 1 and the read head skips an index — and a single
+ * un-attenuated sample in the middle of a hole is an impulse, i.e. a
+ * click, which is exactly the bug already fixed once in the overdub
+ * write. A private cursor cannot skip. */
+#define DROPOUT_MAX_RATE_HZ   3.0f   /* events/sec at full VINYL, fully aged */
+#define DROPOUT_MIN_MS        8.0f
+#define DROPOUT_MAX_MS       70.0f
+#define DROPOUT_DEPTH         0.12f  /* gain at the deepest point of a hole */
+
 #define CRACKLE_DUST_MAX_PROB 0.02f    /* per-sample trigger probability at density_factor=1 */
 #define CRACKLE_POP_MAX_PROB  0.0006f
 #define CRACKLE_ENV_DECAY     0.75f    /* per-sample envelope decay -> ~15-sample tick tail */
@@ -516,11 +539,12 @@ typedef struct {
 
     /* degradation */
     float memory;
+    int   dropout_left, dropout_len, dropout_cursor;
     float darken_lp_l[DARKEN_POLES], darken_lp_r[DARKEN_POLES];
     /* per-block, hoisted out of the sample loop: powf/expf once per block
      * per loop rather than 128 times. The chase behind them moves over
      * seconds, so block granularity is inaudible. */
-    float darken_a, darken_wash, darken_damp1, darken_fb, warp_amt;
+    float darken_a, darken_wash, darken_damp1, darken_fb, warp_amt, dropout_p;
     float warp_drift, warp_drift_target;
     int   warp_drift_countdown;
     float hiss_lp_l, hiss_lp_r;  /* hiss-coloring filter state, see HISS_COLOR_COEFF */
@@ -710,6 +734,8 @@ static void reset_take(loop_engine_t *loop) {
     loop->overdub_last_idx = -1;
     loop->applied_wow = loop->applied_hf_loss = loop->applied_hiss = 0.0f;
     for (int k = 0; k < DARKEN_POLES; k++) loop->darken_lp_l[k] = loop->darken_lp_r[k] = 0.0f;
+    loop->dropout_left = loop->dropout_len = 0;
+    loop->dropout_cursor = 0;
     loop->warp_drift = loop->warp_drift_target = 0.0f;
     loop->warp_drift_countdown = 0;
     loop->applied_saturation = loop->applied_crackle = 0.0f;
@@ -746,6 +772,8 @@ static void close_recording(loop_engine_t *loop) {
     loop->memory = 1.0f;
     loop->applied_wow = loop->applied_hf_loss = loop->applied_hiss = 0.0f;
     for (int k = 0; k < DARKEN_POLES; k++) loop->darken_lp_l[k] = loop->darken_lp_r[k] = 0.0f;
+    loop->dropout_left = loop->dropout_len = 0;
+    loop->dropout_cursor = 0;
     loop->warp_drift = loop->warp_drift_target = 0.0f;
     loop->warp_drift_countdown = 0;
     loop->applied_saturation = loop->applied_crackle = 0.0f;
@@ -852,6 +880,8 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
         float age = 1.0f - clampf(loop->memory, 0.0f, 1.0f);
 
         loop->warp_amt = flavour_reach(loop->applied_wow, age);
+        loop->dropout_p = flavour_reach(loop->applied_crackle, age) *
+                          (DROPOUT_MAX_RATE_HZ / SAMPLE_RATE);
 
         float d = flavour_reach(loop->applied_hf_loss, age);
         if (d <= 0.0001f) {
@@ -1018,6 +1048,34 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                     loop->overdub_last_idx = idx0;
                 } else {
                     loop->overdub_last_idx = -1;
+                }
+
+                /* VINYL dropouts — see DROPOUT_MAX_RATE_HZ. Destructive, so
+                 * the hole is there on every later pass too, and deeper each
+                 * time one lands on top of another. */
+                if (loop->dropout_left > 0) {
+                    float pos = 1.0f - (float)loop->dropout_left / (float)loop->dropout_len;
+                    /* 1 at both edges, 0 in the middle — a parabola rather
+                     * than a cosine, to keep a transcendental out of the
+                     * sample loop. The edges are what stop a hole clicking. */
+                    float shape = 1.0f - 4.0f * pos * (1.0f - pos);
+                    float g = DROPOUT_DEPTH + (1.0f - DROPOUT_DEPTH) * shape;
+                    int c = loop->dropout_cursor;
+                    loop->buffer[c].l = (int16_t)(loop->buffer[c].l * g);
+                    loop->buffer[c].r = (int16_t)(loop->buffer[c].r * g);
+                    loop->dropout_cursor = (c + 1) % loop->recorded_length;
+                    loop->dropout_left--;
+                } else if (!loop->frozen && !loop->erasing &&
+                           rng_range(&loop->rng_state, 0.0f, 1.0f) < loop->dropout_p) {
+                    float ms = DROPOUT_MIN_MS +
+                               rng_range(&loop->rng_state, 0.0f, 1.0f) *
+                               (DROPOUT_MAX_MS - DROPOUT_MIN_MS);
+                    int len = (int)(ms * SAMPLE_RATE / 1000.0f);
+                    if (len > loop->recorded_length / 2) len = loop->recorded_length / 2;
+                    if (len > 0) {
+                        loop->dropout_left = loop->dropout_len = len;
+                        loop->dropout_cursor = idx0;
+                    }
                 }
 
                 float raw_l = (loop->buffer[idx0].l * (1.0f - frac) + loop->buffer[idx1].l * frac) / 32768.0f;

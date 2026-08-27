@@ -1549,6 +1549,69 @@ int main(void) {
               "warp left them bit-identical");
     }
 
+    /* ---------------------------------------------------------------
+     * test23: VINYL eats the take, permanently, and Freeze stops it.
+     *
+     * Dropouts are written INTO the buffer, so the loop's own level is the
+     * measurement: with decay_rate at 600s, plain decay accounts for only
+     * a few percent across this window, and anything more is material that
+     * has been removed and is not coming back.
+     *
+     * Measures a FULL pass of the take every time. Sampling a fraction of
+     * it reads a different part of the loop at a different phase on each
+     * call, which made freeze look broken when it was not.
+     * --------------------------------------------------------------- */
+    {
+        const int TAKE_BLOCKS = 200;
+        double lvl[3];                     /* vinyl 0 / vinyl 1 / vinyl 1 frozen */
+        for (int pass = 0; pass < 3; pass++) {
+            void *inst = api->create_instance(".", NULL);
+            check(inst != NULL, "test23: create_instance");
+            api->set_param(inst, "loopA_decay_rate", "600");
+            api->set_param(inst, "input_routing", "A");
+            press_record(api, inst);
+            float phase = 0.0f;
+            int16_t tb[BLOCK_FRAMES * 2];
+            for (int b = 0; b < TAKE_BLOCKS; b++) {
+                fill_tone(tb, BLOCK_FRAMES, 0.30f, 330.0f, &phase);
+                api->process_block(inst, tb, BLOCK_FRAMES);
+            }
+            api->set_param(inst, "master_record", "STOP!");
+            api->set_param(inst, "loopA_volume", "1");
+            api->set_param(inst, "loopA_hiss", "0");
+            api->set_param(inst, "loopA_wow", "0");
+            api->set_param(inst, "loopA_hf_loss", "0");
+            api->set_param(inst, "loopA_saturation", "0");
+            api->set_param(inst, "loopA_chaos", pass == 0 ? "0" : "1");
+
+            if (pass == 2) {
+                run_silence(api, inst, (long)SAMPLE_RATE * 4);
+                api->set_param(inst, "master_freeze", "Freeze!");
+            }
+            run_silence(api, inst, (long)SAMPLE_RATE * 16);
+
+            double tot = 0.0; long n = 0;
+            for (int b = 0; b < TAKE_BLOCKS + 10; b++) {
+                fill_silence(tb, BLOCK_FRAMES);
+                api->process_block(inst, tb, BLOCK_FRAMES);
+                for (int i = 0; i < BLOCK_FRAMES * 2; i += 2) {
+                    tot += (double)tb[i] * (double)tb[i]; n++;
+                }
+            }
+            lvl[pass] = sqrt(tot / (double)n);
+            api->destroy_instance(inst);
+        }
+        check(lvl[0] > 1000.0, "test23: the control take is still there at VINYL 0");
+        check(lvl[1] < lvl[0] * 0.75,
+              "test23: VINYL at maximum has eaten a large part of the take — "
+              "measures ~0.64 of the control after 16s, and it is material "
+              "removed from the buffer, not a gain change");
+        check(lvl[2] > lvl[1] * 1.15,
+              "test23: freezing part way through leaves a take clearly less "
+              "eaten than one left running (~1.30x) — Freeze stops the damage "
+              "as it stops decay");
+    }
+
     if (g_failures > 0) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;
