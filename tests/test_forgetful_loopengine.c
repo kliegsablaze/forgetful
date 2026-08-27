@@ -1275,91 +1275,48 @@ int main(void) {
         api->destroy_instance(inst);
     }
 
-    /* ---- Test 17: v2 flavor-knob ramp mechanic (2026-08-25) — the FIRST
-     * set_param write to Warp/Darken/Hiss/VINYL since the take started jumps
-     * `applied_X` straight to the new value with NO ramp at all; every write
-     * after that starts a fresh ramp instead, timed to the loop's remaining
-     * time-to-silence (memory*decay_rate), and does NOT jump either. Uses
-     * Darken specifically: its reverb wash is a deterministic function of
-     * applied_hf_loss and the loop's own (constant, known) recorded content,
-     * so "is the wash clearly present" is a reliable proxy for "did
-     * applied_hf_loss actually reach a large value" without needing to
-     * predict exact reverb output samples. ---- */
+    /* ---------------------------------------------------------------
+     * test17: a flavour knob SLEWS. It does not snap, and it does not
+     * take the rest of the take to arrive.
+     *
+     * Replaces a test that asserted the opposite for the first write of a
+     * take ("first touch snaps instantly"). That was the turn-based model,
+     * and it was reported from the device as knobs jumping to a huge value
+     * on first move. Both halves are pinned here, because the obvious fix
+     * for a jump is an over-long glide and that is just as wrong.
+     * --------------------------------------------------------------- */
     {
-        const int16_t CONST_VALUE = 16000;
-
         void *inst = api->create_instance(".", NULL);
         check(inst != NULL, "test17: create_instance");
-
-        api->set_param(inst, "loopA_decay_rate", "20");
-        record_full_buffer_loop_a_constant(api, inst, CONST_VALUE);
-        check(status_is_looping(status_of(api, inst, 'A')), "test17: Looping after buffer-full close");
-
-        /* Lock every other chase-scaled stage off via their own first touch
-         * (each jumps to 0 instantly, same mechanic under test). */
-        api->set_param(inst, "loopA_wow", "0");
+        api->set_param(inst, "loopA_decay_rate", "600");
+        api->set_param(inst, "input_routing", "A");
+        press_record(api, inst);
+        int16_t tb[BLOCK_FRAMES * 2];
+        g_noise_state = 4242u;
+        for (int b = 0; b < 200; b++) {
+            fill_noise(tb, BLOCK_FRAMES, 0.30f);
+            api->process_block(inst, tb, BLOCK_FRAMES);
+        }
+        api->set_param(inst, "master_record", "STOP!");
+        api->set_param(inst, "loopA_volume", "1");
         api->set_param(inst, "loopA_hiss", "0");
         api->set_param(inst, "loopA_chaos", "0");
+        api->set_param(inst, "loopA_wow", "0");
         api->set_param(inst, "loopA_saturation", "0");
-        api->set_param(inst, "loopA_volume", "1");
+        run_silence(api, inst, BLOCK_FRAMES * 8);     /* clear the splice fade */
 
-        int16_t buf[BLOCK_FRAMES * 2];
+        double b_before = measure_brightness(api, inst, 2);
+        api->set_param(inst, "loopA_hf_loss", "1");
+        double b_at_write = measure_brightness(api, inst, 2);   /* ~5ms later */
+        run_silence(api, inst, (long)(SAMPLE_RATE / 5));        /* 200ms */
+        double b_settled = measure_brightness(api, inst, 2);
 
-        /* Age the take to roughly half gone before probing Darken. Since
-         * 2026-08-27 every flavour is scaled by `age` (1 - memory), so on a
-         * FRESH take the wash is zero by design and could not report on the
-         * ramp mechanic at all — this test measured the wash as a proxy for
-         * applied_hf_loss, and the proxy needs the loop to have decayed
-         * enough for the stage to be doing something. decay_rate is 20s
-         * here, so 10s leaves memory ~= 0.5. */
-        run_silence(api, inst, (long)SAMPLE_RATE * 10);
-
-        /* The un-darkened level, measured rather than derived: the content
-         * is a known constant, but it is now scaled by whatever memory has
-         * decayed to, so the old SAMPLE_F * 32767 identity no longer holds. */
-        fill_silence(buf, BLOCK_FRAMES);
-        api->process_block(inst, buf, BLOCK_FRAMES);
-        int32_t identity = 0;
-        for (int i = 0; i < BLOCK_FRAMES; i++) {
-            int32_t v = abs((int)buf[i * 2]);
-            if (v > identity) identity = v;
-        }
-        check(identity > 1000,
-              "test17: aged take still has a clearly measurable level to "
-              "compare the wash against");
-
-        /* FIRST touch on Darken: jumps applied_hf_loss to 0.9 instantly. */
-        api->set_param(inst, "loopA_hf_loss", "0.9");
-        fill_silence(buf, BLOCK_FRAMES);
-        api->process_block(inst, buf, BLOCK_FRAMES);
-        int32_t max_dev_1 = 0;
-        for (int i = 0; i < BLOCK_FRAMES; i++) {
-            int32_t dev = abs(abs((int)buf[i * 2]) - identity);
-            if (dev > max_dev_1) max_dev_1 = dev;
-        }
-        check(max_dev_1 > 500,
-              "test17: first touch on Darken snaps instantly — the reverb wash "
-              "is already clearly audible in the very first block, not still "
-              "ramping up from 0 the way an automatic chase would leave it");
-
-        /* SECOND touch on Darken: target changes to 0.0 (fully off). This
-         * must NOT jump — remaining time is ~20s here, so one more block
-         * (128 samples) can only move applied_hf_loss a tiny fraction of the
-         * way toward 0; the wash must still be clearly present. */
-        api->set_param(inst, "loopA_hf_loss", "0.0");
-        fill_silence(buf, BLOCK_FRAMES);
-        api->process_block(inst, buf, BLOCK_FRAMES);
-        int32_t max_dev_2 = 0;
-        for (int i = 0; i < BLOCK_FRAMES; i++) {
-            int32_t dev = abs(abs((int)buf[i * 2]) - identity);
-            if (dev > max_dev_2) max_dev_2 = dev;
-        }
-        check(max_dev_2 > 500,
-              "test17: second touch on Darken (to a wildly different target) "
-              "does not snap either — the wash is still clearly present one "
-              "block later, proving it ramps over remaining time rather than "
-              "jumping on every write");
-
+        check(b_at_write > b_before * 0.8,
+              "test17: the very next block after the write is still close to "
+              "undarkened — the knob does not snap");
+        check(b_settled < b_at_write * 0.6,
+              "test17: and 200ms later it has plainly arrived — the slew is "
+              "smoothing, not a glide across the take's remaining life");
         api->destroy_instance(inst);
     }
 

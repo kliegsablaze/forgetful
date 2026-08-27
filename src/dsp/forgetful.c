@@ -221,6 +221,15 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * from 0. See flavor_ramp_set_param's `frozen` argument and the
  * `saturation`/`saturation_glide_step` handling for Drive's parallel path
  * (it has no flavor_ramp_t, so it needs its own one-off step holder). */
+/* Ordinary parameter smoothing, and nothing more. The turn-based model
+ * this replaces snapped `applied` to the knob on the first write of a take
+ * and then glided over the take's whole REMAINING LIFE on later writes —
+ * minutes. Both halves were wrong once the flavours became per-pass rates
+ * fed through the write-back: the compounding is the slow evolution now,
+ * so the knob itself should just behave like a knob. Reported from the
+ * device as flavour knobs jumping "to some huge amount" on first move. */
+#define FLAVOUR_SLEW_SECONDS  0.040f
+
 #define FROZEN_GLIDE_SECONDS 0.15f
 
 /* ---- Warp: tape that cannot hold its speed ---------------------------
@@ -490,21 +499,12 @@ typedef struct {
  * turn ramps from — "resume normal mode... with the new initial value...
  * at the value set while frozen". */
 static void flavor_ramp_set_param(flavor_ramp_t *ramp, float *applied, float new_value, float memory, float decay_rate, int frozen) {
+    (void)memory; (void)decay_rate; (void)frozen;
     new_value = clampf(new_value, 0.0f, 1.0f);
     ramp->target = new_value;
-    if (frozen) {
-        ramp->touched = 1;
-        float glide_samples = FROZEN_GLIDE_SECONDS * (float)SAMPLE_RATE;
-        ramp->step = fabsf(new_value - *applied) / glide_samples;
-    } else if (!ramp->touched) {
-        ramp->touched = 1;
-        *applied = new_value;
-        ramp->step = 0.0f;
-    } else {
-        float remaining_samples = memory * decay_rate * (float)SAMPLE_RATE;
-        if (remaining_samples < 1.0f) remaining_samples = 1.0f;
-        ramp->step = fabsf(new_value - *applied) / remaining_samples;
-    }
+    ramp->touched = 1;
+    ramp->step = fabsf(new_value - *applied) /
+                 (FLAVOUR_SLEW_SECONDS * (float)SAMPLE_RATE);
 }
 
 /* Everything genuinely per-loop. Timing decisions inside a loop_engine_t
@@ -761,7 +761,6 @@ static void reset_take(loop_engine_t *loop) {
     loop->overdubbing = 0;
     loop->overdub_gain = 0.0f;
     loop->overdub_last_idx = -1;
-    loop->applied_wow = loop->applied_hf_loss = loop->applied_hiss = 0.0f;
     for (int k = 0; k < DARKEN_POLES; k++) loop->darken_lp_l[k] = loop->darken_lp_r[k] = 0.0f;
     loop->medium_last_idx = -1;
     loop->medium_level = 0.0f;
@@ -771,8 +770,6 @@ static void reset_take(loop_engine_t *loop) {
     loop->gate_env = 0.0f;
     loop->warp_drift = loop->warp_drift_target = 0.0f;
     loop->warp_drift_countdown = 0;
-    loop->applied_saturation = loop->applied_crackle = 0.0f;
-    loop->wow_ramp = loop->hf_loss_ramp = loop->hiss_ramp = loop->crackle_ramp = (flavor_ramp_t){0};
     loop->saturation_glide_step = 0.0f;
     reverb_clear_loop(loop);
 }
@@ -804,6 +801,15 @@ static inline void medium_write(loop_engine_t *loop, int idx, float l, float r) 
     loop->buffer[idx].r = (int16_t)b;
 }
 
+/* NOTE on what a new take does NOT reset: the flavour knobs.
+ *
+ * They used to be zeroed here and in reset_take, so "a knob you dialed in
+ * on a previous take has no effect on the next one until you turn it
+ * again". That desynchronised the UI, which went on showing the old
+ * position while the module read zero — so the first nudge of the encoder
+ * wrote the OLD value and the sound stepped straight to it. They are
+ * settings now, not per-take gestures: a rate of decay is a property of
+ * the machine, not of the tape in it. */
 static void close_recording(loop_engine_t *loop) {
     if (loop->write_head < MIN_RECORDED_FRAMES) {
         /* too short to be a usable take — discard, don't loop a click */
@@ -831,7 +837,6 @@ static void close_recording(loop_engine_t *loop) {
     float take_level = loop->record_abs_sum / (float)loop->recorded_length;
     loop->read_head = 0.0;
     loop->memory = 1.0f;
-    loop->applied_wow = loop->applied_hf_loss = loop->applied_hiss = 0.0f;
     for (int k = 0; k < DARKEN_POLES; k++) loop->darken_lp_l[k] = loop->darken_lp_r[k] = 0.0f;
     loop->medium_last_idx = -1;
     loop->medium_level = 0.0f;
@@ -849,8 +854,6 @@ static void close_recording(loop_engine_t *loop) {
     loop->medium_gain   = 1.0f;
     loop->warp_drift = loop->warp_drift_target = 0.0f;
     loop->warp_drift_countdown = 0;
-    loop->applied_saturation = loop->applied_crackle = 0.0f;
-    loop->wow_ramp = loop->hf_loss_ramp = loop->hiss_ramp = loop->crackle_ramp = (flavor_ramp_t){0};
     loop->saturation_glide_step = 0.0f;
     loop->hiss_lp_l = loop->hiss_lp_r = 0.0f;
     loop->crackle_env = 0.0f;
