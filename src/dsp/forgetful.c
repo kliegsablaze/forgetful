@@ -352,6 +352,23 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * rather than switched, so nothing clicks. */
 #define SPEED_GLIDE_SECONDS   5.0f
 
+/* ---- Trim: one knob, both ends ---------------------------------------
+ * Centre plays the whole take. Left walks the loop's START forward, right
+ * walks its END back, so either direction shortens it — from the front or
+ * from the back.
+ *
+ * It is one bipolar knob rather than a knob plus a modifier because a
+ * chain module cannot see either modifier. Shift+turn is claimed by the
+ * host as FINE ADJUST (page_input.mjs: `fine: !!mods.shift`) and never
+ * reaches the module, and a jog-click on a float DIVES into that cell's
+ * editor rather than writing anything. A module sees turns, and for
+ * write-access params it sees clicks; nothing else. So a single knob
+ * addressing one end at a time is what is actually available, and it
+ * matches Tone and Speed, which are centred the same way.
+ * --------------------------------------------------------------------- */
+#define TRIM_MAX_FRACTION     0.90f   /* most of the take either end can take */
+#define TRIM_DEFAULT_PCT      50.0f
+
 /* ---- Tone: one knob, both filters ------------------------------------
  * The Dirtywave M8's DJ filter. Centre is a true bypass; left sweeps a
  * lowpass down, right sweeps a highpass up. Two poles either way, so a
@@ -821,6 +838,8 @@ typedef struct {
      * arrive with a swoop. Advanced once per block — one octave over five
      * seconds is 0.007 semitones per block, far below anything audible as
      * a step, and it keeps an exp2f out of the sample loop. */
+    float trim_pct;                 /* 0..100, 50 = the whole take */
+    double trim_lo, trim_hi;        /* per block, in frames */
     float tone;                     /* -1 .. +1, 0 = bypass */
     float tone_a;                   /* per-block coefficient */
     int   tone_mode;                /* -1 lowpass, 0 bypass, +1 highpass */
@@ -1147,6 +1166,7 @@ static void init_loop(loop_engine_t *loop, uint32_t rng_seed) {
      * no loop ever plays at all. */
     loop->speed_mul = 1.0f;
     loop->speed_eff = 1.0f;   /* log_cur/target are 0 from the memset = 1x */
+    loop->trim_pct  = TRIM_DEFAULT_PCT;
     /* Age starts FULL (300s, the max — was 180s/3min); Warp/Darken/Hiss/
      * VINYL start at minimum, UNTOUCHED (flavor_ramp_t's zeroed target/step/
      * touched from the memset above is exactly that — nothing to set here).
@@ -1256,6 +1276,19 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 loop->tone_a = 1.0f - expf(-2.0f * PI_F * fc / SAMPLE_RATE);
             }
             if (loop->tone_a > 1.0f) loop->tone_a = 1.0f;
+        }
+
+        {
+            double len = (double)loop->recorded_length;
+            float t = clampf((loop->trim_pct - 50.0f) / 50.0f, -1.0f, 1.0f);
+            double lo = 0.0, hi = len;
+            if (t < 0.0f)      lo = len * (double)(-t * TRIM_MAX_FRACTION);
+            else if (t > 0.0f) hi = len * (double)(1.0f - t * TRIM_MAX_FRACTION);
+            if (hi - lo < (double)MIN_RECORDED_FRAMES) hi = lo + (double)MIN_RECORDED_FRAMES;
+            if (hi > len) { hi = len; lo = hi - (double)MIN_RECORDED_FRAMES; }
+            if (lo < 0.0) lo = 0.0;
+            loop->trim_lo = lo;
+            loop->trim_hi = hi;
         }
 
         loop->warp_amt = flavour_reach(loop->applied_wow, age);
@@ -1383,9 +1416,16 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 /* interpolated buffer read (recorded_length > 0 is
                  * guaranteed while LOOPING — enforced by the
                  * MIN_RECORDED_FRAMES floor in close_recording) */
+                /* the take is read between trim_lo and trim_hi, and wraps
+                 * there rather than at the recorded ends */
+                if (loop->read_head < loop->trim_lo ||
+                    loop->read_head >= loop->trim_hi) {
+                    loop->read_head = loop->trim_lo;
+                }
                 int idx0 = (int)floor(loop->read_head);
                 if (idx0 >= loop->recorded_length) idx0 %= loop->recorded_length;
                 int idx1 = idx0 + 1;
+                if ((double)idx1 >= loop->trim_hi) idx1 = (int)loop->trim_lo;
                 if (idx1 >= loop->recorded_length) idx1 = 0;
                 float frac = (float)(loop->read_head - floor(loop->read_head));
 
@@ -1648,8 +1688,10 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
 
                 /* advance + wrap */
                 loop->read_head += speed;
-                if (loop->read_head >= loop->recorded_length) {
-                    loop->read_head -= loop->recorded_length;
+                if (loop->read_head >= loop->trim_hi) {
+                    double span = loop->trim_hi - loop->trim_lo;
+                    loop->read_head -= span;
+                    if (loop->read_head < loop->trim_lo) loop->read_head = loop->trim_lo;
                 }
 
                 /* Continuous, wall-clock decay: memory drains at a constant
@@ -1723,6 +1765,8 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                         loop->hiss_ramp = loop->crackle_ramp = (flavor_ramp_t){0};
                     loop->applied_wow = loop->applied_hf_loss =
                         loop->applied_hiss = loop->applied_crackle = 0.0f;
+                    /* the trim belonged to the take that just went */
+                    loop->trim_pct = TRIM_DEFAULT_PCT;
                 }
 
 
@@ -1931,6 +1975,9 @@ static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *
         /* wire key stays "chaos" (see the crackle field comment on
          * loop_engine_t) — this is VINYL's live value. */
         flavor_ramp_set_param(&loop->crackle_ramp, &loop->applied_crackle, (float)atof(val), loop->memory, loop->decay_rate, loop->frozen);
+    } else if (strcmp(suffix, "trim") == 0) {
+        loop->trim_pct = clampf((float)atof(val), 0.0f, 100.0f);
+        return;
     } else if (strcmp(suffix, "tone") == 0) {
         loop->tone = clampf((float)atof(val) / 100.0f, -1.0f, 1.0f);
         return;
@@ -1961,6 +2008,17 @@ static int loop_get_param(const loop_engine_t *loop, uint64_t total_frames, cons
     if (strcmp(suffix, "hf_loss") == 0)     return snprintf(buf, len, "%.3f", loop->hf_loss_ramp.target);
     if (strcmp(suffix, "hiss") == 0)        return snprintf(buf, len, "%.3f", loop->hiss_ramp.target);
     if (strcmp(suffix, "chaos") == 0)       return snprintf(buf, len, "%.3f", loop->crackle_ramp.target);
+    if (strcmp(suffix, "trim") == 0) {
+        /* Names the end it is moving, and where that end now sits — the
+         * knob addresses one at a time, so saying which is the whole
+         * readout. */
+        float t = (loop->trim_pct - 50.0f) / 50.0f;
+        if (t < -0.005f)
+            return snprintf(buf, len, "START %d", (int)lroundf(-t * TRIM_MAX_FRACTION * 100.0f));
+        if (t > 0.005f)
+            return snprintf(buf, len, "END %d", (int)lroundf((1.0f - t * TRIM_MAX_FRACTION) * 100.0f));
+        return snprintf(buf, len, "FULL");
+    }
     if (strcmp(suffix, "tone") == 0)
         return snprintf(buf, len, "%.0f", (double)(loop->tone * 100.0f));
     if (strcmp(suffix, "speed") == 0) {
@@ -2288,6 +2346,9 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                  * with it so a UI reading this metadata doesn't lie. Drive
                  * (saturation) keeps a nonzero default (0.25) since it's
                  * still the v1 auto-chase knob, not a v2 ramp. */
+                ",{\"key\":\"loop%c_trim\",\"name\":\"Trim\",\"type\":\"float\","
+                  "\"min\":0,\"max\":100,\"default\":50,\"step\":1,\"unit\":\"%%\","
+                  "\"display_format\":\"%%.0f\"}"
                 ",{\"key\":\"loop%c_decay_rate\",\"name\":\"Age\",\"type\":\"float\","
                   "\"min\":3,\"max\":300,\"default\":300,\"step\":1,\"unit\":\"s\"}"
                 ",{\"key\":\"loop%c_send\",\"name\":\"Space\",\"type\":\"float\","
@@ -2313,7 +2374,7 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}"
                 ",{\"key\":\"loop%c_hiss\",\"name\":\"Hiss\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}",
-                c, c, c, c, c, c, c);
+                c, c, c, c, c, c, c, c);
         }
         pos += snprintf(json + pos, sizeof(json) - pos, "]");
         if (pos >= (int)sizeof(json) || pos >= len) return -1;
@@ -2378,9 +2439,9 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
             char c = LOOP_LETTERS[i];
             pos += snprintf(json + pos, sizeof(json) - pos,
                 ",\"loop%c\":{\"label\":\"Loop %c\",\"knobs\":["
-                  "\"loop%c_decay_rate\",\"loop%c_send\",\"\",\"loop%c_state\","
+                  "\"loop%c_decay_rate\",\"loop%c_trim\",\"loop%c_send\",\"loop%c_state\","
                   "\"loop%c_wow\",\"loop%c_hf_loss\",\"loop%c_chaos\",\"loop%c_hiss\"]}",
-                c, c, c, c, c, c, c, c, c);
+                c, c, c, c, c, c, c, c, c, c);
         }
         pos += snprintf(json + pos, sizeof(json) - pos, "}}");
         if (pos >= (int)sizeof(json) || pos >= len) return -1;

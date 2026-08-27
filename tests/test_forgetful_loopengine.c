@@ -19,7 +19,7 @@
  * depends on how long the recording is.
  *
  * Covers:
- *   0. chain_params / ui_hierarchy shape — exactly 44 entries (8 master +
+ *   0. chain_params / ui_hierarchy shape — exactly 48 entries (8 master +
  *      4x8 loop), every expected key present in both, including
  *      master_record/master_freeze, and no OFF option in Route's options
  *      list.
@@ -376,8 +376,8 @@ int main(void) {
         int key_count = 0;
         const char *p = cp;
         while ((p = strstr(p, "\"key\":\"")) != NULL) { key_count++; p += 7; }
-        check(key_count == 44,
-              "test0: chain_params has exactly 44 entries (8 master + 4x9 loop; Erase went 2026-08-27)");
+        check(key_count == 48,
+              "test0: chain_params has exactly 48 entries (8 master + 4x10 loop; Erase went and Trim arrived 2026-08-27)");
 
         n = api->get_param(inst, "ui_hierarchy", hier, sizeof(hier));
         check(n > 0, "test0: ui_hierarchy readable");
@@ -416,7 +416,7 @@ int main(void) {
             check(strstr(hier, probe) != NULL, "test0: ui_hierarchy contains master key");
         }
         static const char *loop_suffixes[] = {
-            "decay_rate", "wow", "hf_loss", "hiss", "send", "chaos", "state", "speed", "tone"
+            "decay_rate", "wow", "hf_loss", "hiss", "send", "chaos", "state", "speed", "tone", "trim"
         };
         static const char letters[] = { 'A', 'B', 'C', 'D' };
         for (int li = 0; li < 4; li++) {
@@ -1761,6 +1761,77 @@ int main(void) {
         api->get_param(inst, "loopA_speed", v, sizeof(v));
         check(strcmp(v, "1x") == 0, "test30: speed survives too");
         api->destroy_instance(inst);
+    }
+
+    /* ---------------------------------------------------------------
+     * test31: Trim shortens the loop from either end.
+     *
+     * The marker is placed so it survives the trim being measured — one
+     * click cannot outlive both a START trim that eats the front and an
+     * END trim that eats the back, so each direction gets its own take.
+     * --------------------------------------------------------------- */
+    {
+        const int TAKE = 200;
+        /* pass 0: marker at the head, measures END trims (right of centre)
+           pass 1: marker at 75%, measures START trims (left of centre)   */
+        const int marker[2] = { 0, 150 };
+        const char *trims[2][3] = { { "50", "75", "95" }, { "50", "35", "20" } };
+        for (int pass = 0; pass < 2; pass++) {
+            double prev = 0.0;
+            for (int k = 0; k < 3; k++) {
+                void *inst = api->create_instance(".", NULL);
+                check(inst != NULL, "test31: create_instance");
+                api->set_param(inst, "input_routing", "A");
+                api->set_param(inst, "loopA_decay_rate", "600");
+                api->set_param(inst, "loopA_volume", "1");
+                press_record(api, inst);
+                int16_t tb[BLOCK_FRAMES * 2];
+                for (int b = 0; b < TAKE; b++) {
+                    fill_silence(tb, BLOCK_FRAMES);
+                    if (b == marker[pass])
+                        for (int i = 0; i < 40; i++) { tb[i*2] = 14000; tb[i*2+1] = 14000; }
+                    api->process_block(inst, tb, BLOCK_FRAMES);
+                }
+                api->set_param(inst, "master_record", "STOP!");
+                api->set_param(inst, "loopA_hiss", "0");
+                api->set_param(inst, "loopA_chaos", "0");
+                api->set_param(inst, "loopA_wow", "0");
+                api->set_param(inst, "loopA_hf_loss", "0");
+                api->set_param(inst, "loopA_send", "0");
+                api->set_param(inst, "loopA_trim", trims[pass][k]);
+
+                static double x[900 * BLOCK_FRAMES];
+                long n = 0; double pk = 0.0;
+                for (int b = 0; b < 900; b++) {
+                    fill_silence(tb, BLOCK_FRAMES);
+                    api->process_block(inst, tb, BLOCK_FRAMES);
+                    for (int i = 0; i < BLOCK_FRAMES; i++) {
+                        x[n] = tb[i * 2];
+                        if (fabs(x[n]) > pk) pk = fabs(x[n]);
+                        n++;
+                    }
+                }
+                double sum = 0.0; long cnt = 0, last = -1;
+                for (long i = 1; i < n; i++) {
+                    if (fabs(x[i]) > pk * 0.5 && fabs(x[i-1]) <= pk * 0.5) {
+                        if (last >= 0) { sum += (double)(i - last); cnt++; }
+                        last = i;
+                    }
+                }
+                double per = cnt ? sum / (double)cnt / (double)SAMPLE_RATE : 0.0;
+                check(per > 0.0, "test31: the marker repeats, so a period is measurable");
+                if (k == 0) {
+                    check(per > 0.5 && per < 0.65,
+                          "test31: at centre the whole take plays (~0.58s)");
+                } else {
+                    check(per < prev * 0.95,
+                          "test31: and every step away from centre makes the loop "
+                          "shorter — left from the front, right from the back");
+                }
+                prev = per;
+                api->destroy_instance(inst);
+            }
+        }
     }
 
     if (g_failures > 0) {
