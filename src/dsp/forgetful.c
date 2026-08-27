@@ -424,6 +424,11 @@ typedef struct {
     int idx;
 } reverb_allpass_t;
 
+typedef struct {
+    reverb_comb_t    comb_l[REVERB_NUM_COMBS], comb_r[REVERB_NUM_COMBS];
+    reverb_allpass_t allpass_l[REVERB_NUM_ALLPASS], allpass_r[REVERB_NUM_ALLPASS];
+} reverb_t;
+
 static int reverb_comb_alloc(reverb_comb_t *c, int size) {
     c->buf = (float *)calloc((size_t)size, sizeof(float));
     if (!c->buf) return -1;
@@ -459,6 +464,143 @@ static inline float reverb_allpass_process(reverb_allpass_t *a, float input) {
     if (++a->idx >= a->size) a->idx = 0;
     return output;
 }
+
+/* ---- The send reverb -------------------------------------------------
+ * A feedback delay network, not the Schroeder the per-loop wash uses.
+ * That one is deliberately thin — 4 combs, 2 allpasses — because FOUR of
+ * them run at once, one per memory. The send bus is a single shared
+ * instance and can afford the real thing.
+ *
+ * Eight delay lines of mutually prime length, mixed on every pass through
+ * an 8x8 Hadamard matrix, done as a fast Walsh transform: 24 add/subtract
+ * rather than 64 multiplies. The orthogonal mixing is what makes a tail
+ * dense and smooth rather than a handful of audible repeats — energy is
+ * spread across every line on every pass, so echo density grows with time
+ * and no single delay length is left ringing on its own.
+ *
+ * Four series allpasses diffuse the input first, so a transient is
+ * smeared before it ever reaches the tank; without that the first few
+ * milliseconds read as distinct taps.
+ *
+ * Two of the eight lines are read at a slowly modulated fractional
+ * offset. This is the part that matters most for "lush": a long FDN whose
+ * lengths are fixed develops a metallic pitched ring as the same delays
+ * reinforce each other, and a few samples of slow wander breaks it up.
+ * The modulation is computed once per block — at 0.13 Hz the step across
+ * 2.9ms is far too small to zipper.
+ * --------------------------------------------------------------------- */
+#define FDN_LINES        8
+#define FDN_PREDELAY     882      /* 20ms */
+#define FDN_DECAY        0.952f   /* ~7s RT60 at these lengths; measured */
+#define FDN_DAMP         0.34f    /* per-line HF loss, darkens as it decays */
+#define FDN_MOD_SAMPLES  6.0f
+#define FDN_INPUT_DIFFUSERS 4
+
+static const int fdn_line_len[FDN_LINES] =
+    { 1567, 1789, 2003, 2251, 2503, 2777, 3011, 3299 };
+static const int fdn_diffuser_len[FDN_INPUT_DIFFUSERS] = { 211, 159, 563, 411 };
+
+typedef struct {
+    float *line[FDN_LINES];
+    int    idx[FDN_LINES];
+    float  damp[FDN_LINES];
+    reverb_allpass_t diff[FDN_INPUT_DIFFUSERS];
+    float *predelay;
+    int    pre_idx;
+    float  mod_phase;
+    float  mod_off[FDN_LINES];   /* per block */
+} fdn_t;
+
+static void fdn_free(fdn_t *f) {
+    for (int i = 0; i < FDN_LINES; i++) free(f->line[i]);
+    for (int i = 0; i < FDN_INPUT_DIFFUSERS; i++) free(f->diff[i].buf);
+    free(f->predelay);
+}
+
+static int fdn_alloc(fdn_t *f) {
+    for (int i = 0; i < FDN_LINES; i++) {
+        f->line[i] = (float *)calloc((size_t)fdn_line_len[i], sizeof(float));
+        if (!f->line[i]) { fdn_free(f); return -1; }
+    }
+    for (int i = 0; i < FDN_INPUT_DIFFUSERS; i++) {
+        if (reverb_allpass_alloc(&f->diff[i], fdn_diffuser_len[i]) != 0) {
+            fdn_free(f); return -1;
+        }
+    }
+    f->predelay = (float *)calloc(FDN_PREDELAY, sizeof(float));
+    if (!f->predelay) { fdn_free(f); return -1; }
+    return 0;
+}
+
+static void fdn_clear(fdn_t *f) {
+    for (int i = 0; i < FDN_LINES; i++) {
+        memset(f->line[i], 0, sizeof(float) * (size_t)fdn_line_len[i]);
+        f->idx[i] = 0; f->damp[i] = 0.0f;
+    }
+    for (int i = 0; i < FDN_INPUT_DIFFUSERS; i++) {
+        memset(f->diff[i].buf, 0, sizeof(float) * (size_t)f->diff[i].size);
+        f->diff[i].idx = 0;
+    }
+    memset(f->predelay, 0, sizeof(float) * FDN_PREDELAY);
+    f->pre_idx = 0; f->mod_phase = 0.0f;
+}
+
+/* once per block — see the modulation note above */
+static void fdn_update_mod(fdn_t *f, int frames) {
+    f->mod_phase += 2.0f * PI_F * 0.13f * (float)frames / SAMPLE_RATE;
+    if (f->mod_phase >= 2.0f * PI_F) f->mod_phase -= 2.0f * PI_F;
+    for (int i = 0; i < FDN_LINES; i++) f->mod_off[i] = 0.0f;
+    f->mod_off[0] = (sinf(f->mod_phase) * 0.5f + 0.5f) * FDN_MOD_SAMPLES;
+    f->mod_off[3] = (sinf(f->mod_phase * 1.47f + 1.1f) * 0.5f + 0.5f) * FDN_MOD_SAMPLES;
+}
+
+static inline void hadamard8(float *v) {
+    for (int step = 1; step < FDN_LINES; step <<= 1) {
+        for (int i = 0; i < FDN_LINES; i += step << 1) {
+            for (int j = i; j < i + step; j++) {
+                float a = v[j], b = v[j + step];
+                v[j] = a + b; v[j + step] = a - b;
+            }
+        }
+    }
+}
+
+static inline void fdn_process(fdn_t *f, float in, float *out_l, float *out_r) {
+    /* pre-delay, then diffusion */
+    float pre = f->predelay[f->pre_idx];
+    f->predelay[f->pre_idx] = in;
+    if (++f->pre_idx >= FDN_PREDELAY) f->pre_idx = 0;
+    for (int i = 0; i < FDN_INPUT_DIFFUSERS; i++)
+        pre = reverb_allpass_process(&f->diff[i], pre);
+
+    float v[FDN_LINES];
+    for (int i = 0; i < FDN_LINES; i++) {
+        int len = fdn_line_len[i];
+        float x;
+        if (f->mod_off[i] > 0.0f) {
+            float rpos = (float)f->idx[i] + f->mod_off[i];
+            int r0 = (int)rpos; float fr = rpos - (float)r0;
+            x = f->line[i][r0 % len] * (1.0f - fr) +
+                f->line[i][(r0 + 1) % len] * fr;
+        } else {
+            x = f->line[i][f->idx[i]];
+        }
+        f->damp[i] += FDN_DAMP * (x - f->damp[i]);
+        v[i] = f->damp[i];
+    }
+
+    /* stereo taps BEFORE the mix, so the two sides are decorrelated */
+    *out_l = (v[0] - v[1] + v[2] - v[3]) * 0.5f;
+    *out_r = (v[4] - v[5] + v[6] - v[7]) * 0.5f;
+
+    hadamard8(v);
+    const float norm = FDN_DECAY * 0.35355339f;   /* 1/sqrt(8) keeps it orthogonal */
+    for (int i = 0; i < FDN_LINES; i++) {
+        f->line[i][f->idx[i]] = pre + v[i] * norm;
+        if (++f->idx[i] >= fdn_line_len[i]) f->idx[i] = 0;
+    }
+}
+
 
 static float clampf(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -578,12 +720,12 @@ typedef struct {
     int   warp_drift_countdown;
     float hiss_lp_l, hiss_lp_r;  /* hiss-coloring filter state, see HISS_COLOR_COEFF */
     float crackle_env;  /* VINYL click/pop envelope, see CRACKLE_DUST_MAX_PROB */
-    int   half_speed;  /* Mixer page: read the tape at half rate, so the
-                        * loop drops an octave and takes twice as long to
-                        * come round. Applied as a multiplier ON TOP of
-                        * Warp's modulation rather than replacing it, so
-                        * the two compose instead of one cancelling the
-                        * other. */
+    int   speed_div;   /* 1, 2 or 4: read the tape at 1/N rate, so the loop
+                        * drops N octaves and takes N times as long to come
+                        * round. Applied as a multiplier ON TOP of Warp's
+                        * modulation rather than replacing it, so the two
+                        * compose. A slowed memory also disintegrates
+                        * slower, since the damage is per pass. */
     int   frozen;  /* master_freeze: memory stops draining, loop keeps
                     * playing at whatever character it already reached */
     int   overdubbing;  /* master_record's second toggle while LOOPING (not
@@ -610,8 +752,7 @@ typedef struct {
     /* Darken's reverb wash — see the REVERB_NUM_COMBS comment. Buffers are
      * heap-allocated per instance (v2_create_instance) sized exactly to
      * reverb_comb_tuning_l/r, not a fixed MAX_DELAY. */
-    reverb_comb_t    comb_l[REVERB_NUM_COMBS], comb_r[REVERB_NUM_COMBS];
-    reverb_allpass_t allpass_l[REVERB_NUM_ALLPASS], allpass_r[REVERB_NUM_ALLPASS];
+    reverb_t wash;
 
     /* erase fade-out: an ADDITIONAL output gain, independent of memory,
      * ramping 1.0 -> 0.0 over ERASE_FADE_SECONDS once erase fires on a
@@ -635,36 +776,55 @@ typedef struct {
 /* free(NULL) is a no-op, so this is safe on a loop whose allocation failed
  * partway through reverb_alloc_loop (calloc'd inst_t means every unset
  * .buf starts NULL) as well as on a fully-allocated one. */
-static void reverb_free_loop(loop_engine_t *loop) {
+static void reverb_free(reverb_t *rv) {
     for (int i = 0; i < REVERB_NUM_COMBS; i++) {
-        free(loop->comb_l[i].buf);
-        free(loop->comb_r[i].buf);
+        free(rv->comb_l[i].buf);
+        free(rv->comb_r[i].buf);
     }
     for (int i = 0; i < REVERB_NUM_ALLPASS; i++) {
-        free(loop->allpass_l[i].buf);
-        free(loop->allpass_r[i].buf);
+        free(rv->allpass_l[i].buf);
+        free(rv->allpass_r[i].buf);
     }
 }
 
 /* Allocates every comb/allpass buffer for one loop. On failure partway
  * through, frees whatever this call already allocated before returning -1
  * — the caller still owns freeing any OTHER loops it already succeeded on. */
-static int reverb_alloc_loop(loop_engine_t *loop) {
+static int reverb_alloc(reverb_t *rv) {
     for (int i = 0; i < REVERB_NUM_COMBS; i++) {
-        if (reverb_comb_alloc(&loop->comb_l[i], reverb_comb_tuning_l[i]) != 0 ||
-            reverb_comb_alloc(&loop->comb_r[i], reverb_comb_tuning_r[i]) != 0) {
-            reverb_free_loop(loop);
+        if (reverb_comb_alloc(&rv->comb_l[i], reverb_comb_tuning_l[i]) != 0 ||
+            reverb_comb_alloc(&rv->comb_r[i], reverb_comb_tuning_r[i]) != 0) {
+            reverb_free(rv);
             return -1;
         }
     }
     for (int i = 0; i < REVERB_NUM_ALLPASS; i++) {
-        if (reverb_allpass_alloc(&loop->allpass_l[i], reverb_allpass_tuning_l[i]) != 0 ||
-            reverb_allpass_alloc(&loop->allpass_r[i], reverb_allpass_tuning_r[i]) != 0) {
-            reverb_free_loop(loop);
+        if (reverb_allpass_alloc(&rv->allpass_l[i], reverb_allpass_tuning_l[i]) != 0 ||
+            reverb_allpass_alloc(&rv->allpass_r[i], reverb_allpass_tuning_r[i]) != 0) {
+            reverb_free(rv);
             return -1;
         }
     }
     return 0;
+}
+
+/* One pass of a reverb_t. Mono in, stereo out — the two channels differ
+ * only by their comb/allpass tunings, same as freeverb's stereo spread. */
+static inline void reverb_process(reverb_t *rv, float in, float fb,
+                                  float damp1, float *out_l, float *out_r) {
+    float damp2 = 1.0f - damp1;
+    float l = 0.0f, r = 0.0f;
+    for (int c = 0; c < REVERB_NUM_COMBS; c++) {
+        l += reverb_comb_process(&rv->comb_l[c], in, fb, damp1, damp2);
+        r += reverb_comb_process(&rv->comb_r[c], in, fb, damp1, damp2);
+    }
+    l *= 1.0f / (float)REVERB_NUM_COMBS;
+    r *= 1.0f / (float)REVERB_NUM_COMBS;
+    for (int a = 0; a < REVERB_NUM_ALLPASS; a++) {
+        l = reverb_allpass_process(&rv->allpass_l[a], l);
+        r = reverb_allpass_process(&rv->allpass_r[a], r);
+    }
+    *out_l = l; *out_r = r;
 }
 
 typedef struct {
@@ -677,6 +837,8 @@ typedef struct {
     /* Master page */
     int   input_routing;            /* ROUTE_A..ROUTE_D — always a valid loop index */
     float loop_volume[NUM_LOOPS];
+    float loop_send[NUM_LOOPS];   /* post-fader send into the FDN */
+    fdn_t send_reverb;
 } inst_t;
 
 /* ---- small helpers ---- */
@@ -733,17 +895,17 @@ static float rng_range(uint32_t *seed, float lo, float hi) {
 
 /* Zeroes a loop's reverb tail — every comb/allpass buffer, filterstore and
  * write index — so a fresh take never inherits the previous take's wash. */
-static void reverb_clear_loop(loop_engine_t *loop) {
+static void reverb_clear(reverb_t *rv) {
     for (int i = 0; i < REVERB_NUM_COMBS; i++) {
-        memset(loop->comb_l[i].buf, 0, sizeof(float) * (size_t)loop->comb_l[i].size);
-        memset(loop->comb_r[i].buf, 0, sizeof(float) * (size_t)loop->comb_r[i].size);
-        loop->comb_l[i].idx = loop->comb_r[i].idx = 0;
-        loop->comb_l[i].filterstore = loop->comb_r[i].filterstore = 0.0f;
+        memset(rv->comb_l[i].buf, 0, sizeof(float) * (size_t)rv->comb_l[i].size);
+        memset(rv->comb_r[i].buf, 0, sizeof(float) * (size_t)rv->comb_r[i].size);
+        rv->comb_l[i].idx = rv->comb_r[i].idx = 0;
+        rv->comb_l[i].filterstore = rv->comb_r[i].filterstore = 0.0f;
     }
     for (int i = 0; i < REVERB_NUM_ALLPASS; i++) {
-        memset(loop->allpass_l[i].buf, 0, sizeof(float) * (size_t)loop->allpass_l[i].size);
-        memset(loop->allpass_r[i].buf, 0, sizeof(float) * (size_t)loop->allpass_r[i].size);
-        loop->allpass_l[i].idx = loop->allpass_r[i].idx = 0;
+        memset(rv->allpass_l[i].buf, 0, sizeof(float) * (size_t)rv->allpass_l[i].size);
+        memset(rv->allpass_r[i].buf, 0, sizeof(float) * (size_t)rv->allpass_r[i].size);
+        rv->allpass_l[i].idx = rv->allpass_r[i].idx = 0;
     }
 }
 
@@ -777,7 +939,7 @@ static void reset_take(loop_engine_t *loop) {
     loop->warp_drift = loop->warp_drift_target = 0.0f;
     loop->warp_drift_countdown = 0;
     loop->saturation_glide_step = 0.0f;
-    reverb_clear_loop(loop);
+    reverb_clear(&loop->wash);
 }
 
 /* Shared by all three close triggers: a manual master_record press, buffer-
@@ -867,7 +1029,7 @@ static void close_recording(loop_engine_t *loop) {
     loop->overdubbing = 0;
     loop->overdub_gain = 0.0f;
     loop->overdub_last_idx = -1;
-    reverb_clear_loop(loop);
+    reverb_clear(&loop->wash);
     /* Every genuinely NEW take (this function only ever closes a fresh
      * LOOP_RECORDING, never fires for an overdub — see the "overdub" branch
      * of set_param's master_record handler) starts Drive at 0 (auto-chases
@@ -912,11 +1074,11 @@ static void *v2_create_instance(const char *dir, const char *cfg) {
     for (int i = 0; i < NUM_LOOPS; i++) {
         init_loop(&s->loops[i], seeds[i]);
         s->loops[i].buffer = (frame16_t *)calloc((size_t)BUFFER_CAPACITY, sizeof(frame16_t));
-        if (!s->loops[i].buffer || reverb_alloc_loop(&s->loops[i]) != 0) {
+        if (!s->loops[i].buffer || reverb_alloc(&s->loops[i].wash) != 0) {
             free(s->loops[i].buffer); /* no-op if it was the reverb alloc that failed */
             for (int j = 0; j < i; j++) {
                 free(s->loops[j].buffer);
-                reverb_free_loop(&s->loops[j]);
+                reverb_free(&s->loops[j].wash);
             }
             free(s);
             return NULL;
@@ -924,6 +1086,16 @@ static void *v2_create_instance(const char *dir, const char *cfg) {
         s->loops[i].capacity_frames = BUFFER_CAPACITY;
         s->loop_volume[i] = DEFAULT_LOOP_VOLUME;
     }
+
+    if (fdn_alloc(&s->send_reverb) != 0) {
+        for (int j = 0; j < NUM_LOOPS; j++) {
+            free(s->loops[j].buffer);
+            reverb_free(&s->loops[j].wash);
+        }
+        free(s);
+        return NULL;
+    }
+    fdn_clear(&s->send_reverb);
 
     s->input_routing = ROUTE_A;  /* default — no OFF state to start unrouted in */
 
@@ -935,8 +1107,9 @@ static void v2_destroy_instance(void *i) {
     if (!s) return;
     for (int li = 0; li < NUM_LOOPS; li++) {
         free(s->loops[li].buffer);
-        reverb_free_loop(&s->loops[li]);
+        reverb_free(&s->loops[li].wash);
     }
+    fdn_free(&s->send_reverb);
     free(s);
 }
 
@@ -1000,11 +1173,14 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                              d * (REVERB_FEEDBACK_MAX - REVERB_FEEDBACK_MIN);
     }
 
+    fdn_update_mod(&s->send_reverb, frames);
+
     for (int i = 0; i < frames; i++) {
         int16_t raw_dry_l = lr[i * 2];
         int16_t raw_dry_r = lr[i * 2 + 1];
 
         float wet_total_l = 0.0f, wet_total_r = 0.0f;
+        float send_in = 0.0f;
 
         for (int li = 0; li < NUM_LOOPS; li++) {
             loop_engine_t *loop = &s->loops[li];
@@ -1071,7 +1247,7 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                              loop->warp_drift * DRIFT_MOD_DEPTH) * w +
                             sinf(loop->flutter_phase) * FLUTTER_MOD_DEPTH * w * w;
                 double speed = 1.0 + mod;
-                if (loop->half_speed) speed *= 0.5;
+                if (loop->speed_div > 1) speed /= (double)loop->speed_div;
 
                 loop->wow_phase += 2.0f * PI_F * WOW_RATE_HZ / SAMPLE_RATE;
                 if (loop->wow_phase >= 2.0f * PI_F) loop->wow_phase -= 2.0f * PI_F;
@@ -1327,20 +1503,9 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * to the medium, so it does not accumulate either. */
                 float out_l = med_l, out_r = med_r;
                 if (loop->darken_wash > 0.0f) {
-                    float damp1 = loop->darken_damp1;
-                    float damp2 = 1.0f - damp1;
-                    float rev_input = (med_l + med_r) * 0.5f;
-                    float rev_l = 0.0f, rev_r = 0.0f;
-                    for (int c = 0; c < REVERB_NUM_COMBS; c++) {
-                        rev_l += reverb_comb_process(&loop->comb_l[c], rev_input, loop->darken_fb, damp1, damp2);
-                        rev_r += reverb_comb_process(&loop->comb_r[c], rev_input, loop->darken_fb, damp1, damp2);
-                    }
-                    rev_l *= 1.0f / (float)REVERB_NUM_COMBS;
-                    rev_r *= 1.0f / (float)REVERB_NUM_COMBS;
-                    for (int a = 0; a < REVERB_NUM_ALLPASS; a++) {
-                        rev_l = reverb_allpass_process(&loop->allpass_l[a], rev_l);
-                        rev_r = reverb_allpass_process(&loop->allpass_r[a], rev_r);
-                    }
+                    float rev_l, rev_r;
+                    reverb_process(&loop->wash, (med_l + med_r) * 0.5f,
+                                   loop->darken_fb, loop->darken_damp1, &rev_l, &rev_r);
                     out_l = med_l + (rev_l - med_l) * loop->darken_wash;
                     out_r = med_r + (rev_r - med_r) * loop->darken_wash;
                 }
@@ -1463,8 +1628,22 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
             }
             }
 
-            wet_total_l += wet_l * s->loop_volume[li];
-            wet_total_r += wet_r * s->loop_volume[li];
+            /* post-fader: turning a memory down turns its send down with
+             * it, which is what "send" means everywhere else */
+            float lvl_l = wet_l * s->loop_volume[li];
+            float lvl_r = wet_r * s->loop_volume[li];
+            wet_total_l += lvl_l;
+            wet_total_r += lvl_r;
+            send_in += (lvl_l + lvl_r) * 0.5f * s->loop_send[li];
+        }
+
+        /* End of chain. Run unconditionally, so a tail keeps ringing after
+         * the sends are pulled back rather than being cut off with them. */
+        {
+            float rl, rr;
+            fdn_process(&s->send_reverb, send_in, &rl, &rr);
+            wet_total_l += rl;
+            wet_total_r += rr;
         }
 
         lr[i * 2]     = mix_dry_wet(raw_dry_l, wet_total_l);
@@ -1635,13 +1814,17 @@ static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *
         /* wire key stays "chaos" (see the crackle field comment on
          * loop_engine_t) — this is VINYL's live value. */
         flavor_ramp_set_param(&loop->crackle_ramp, &loop->applied_crackle, (float)atof(val), loop->memory, loop->decay_rate, loop->frozen);
-    } else if (strcmp(suffix, "half_speed") == 0) {
-        /* The option STRINGS have to be matched before falling back to an
-         * index, because atoi("1x") is 1 — the normal-speed spelling would
-         * otherwise select half speed. */
-        if (strcmp(val, "1/2") == 0)      loop->half_speed = 1;
-        else if (strcmp(val, "1x") == 0)  loop->half_speed = 0;
-        else                              loop->half_speed = (atoi(val) != 0);
+    } else if (strcmp(suffix, "speed") == 0) {
+        /* The option STRINGS are matched before any index fallback,
+         * because atoi("1x") is 1 — the normal-speed spelling would
+         * otherwise select the second option. */
+        if (strcmp(val, "1/2") == 0)      loop->speed_div = 2;
+        else if (strcmp(val, "1/4") == 0) loop->speed_div = 4;
+        else if (strcmp(val, "1x") == 0)  loop->speed_div = 1;
+        else {
+            int ix = atoi(val);
+            loop->speed_div = (ix == 2) ? 4 : (ix == 1) ? 2 : 1;
+        }
         return;
     } else if (strcmp(suffix, "erase") == 0) {
         /* gesture-test's pattern: fire on anything that isn't the idle
@@ -1681,10 +1864,11 @@ static int loop_get_param(const loop_engine_t *loop, uint64_t total_frames, cons
     if (strcmp(suffix, "hiss") == 0)        return snprintf(buf, len, "%.3f", loop->hiss_ramp.target);
     if (strcmp(suffix, "saturation") == 0)  return snprintf(buf, len, "%.3f", loop->saturation);
     if (strcmp(suffix, "chaos") == 0)       return snprintf(buf, len, "%.3f", loop->crackle_ramp.target);
-    if (strcmp(suffix, "half_speed") == 0) {
+    if (strcmp(suffix, "speed") == 0) {
         /* Names the CURRENT state, like Freeze — it is a setting you can
          * see rather than an action, and four of them sit side by side. */
-        return snprintf(buf, len, loop->half_speed ? "1/2" : "1x");
+        return snprintf(buf, len, loop->speed_div == 4 ? "1/4"
+                                : loop->speed_div == 2 ? "1/2" : "1x");
     }
     if (strcmp(suffix, "erase") == 0) {
         /* "ERASE" at rest (2026-08-25, was always "-"), "ERASING n" while
@@ -1737,6 +1921,8 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
             char key_buf[32];
             snprintf(key_buf, sizeof(key_buf), "loop%c_volume", LOOP_LETTERS[i]);
             if (json_get_float(val, key_buf, &v) == 0) s->loop_volume[i] = clampf(v, 0.0f, 1.0f);
+            snprintf(key_buf, sizeof(key_buf), "loop%c_send", LOOP_LETTERS[i]);
+            if (json_get_float(val, key_buf, &v) == 0) s->loop_send[i] = clampf(v, 0.0f, 1.0f);
 
             snprintf(key_buf, sizeof(key_buf), "loop%c_decay_rate", LOOP_LETTERS[i]);
             if (json_get_float(val, key_buf, &v) == 0) s->loops[i].decay_rate = clampf(v, 3.0f, 300.0f);
@@ -1755,8 +1941,9 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
             if (json_get_float(val, key_buf, &v) == 0) s->loops[i].saturation = clampf(v, 0.0f, 1.0f);
             snprintf(key_buf, sizeof(key_buf), "loop%c_chaos", LOOP_LETTERS[i]);
             if (json_get_float(val, key_buf, &v) == 0) s->loops[i].crackle_ramp.target = clampf(v, 0.0f, 1.0f);
-            snprintf(key_buf, sizeof(key_buf), "loop%c_half_speed", LOOP_LETTERS[i]);
-            if (json_get_float(val, key_buf, &v) == 0) s->loops[i].half_speed = (v != 0.0f);
+            snprintf(key_buf, sizeof(key_buf), "loop%c_speed", LOOP_LETTERS[i]);
+            if (json_get_float(val, key_buf, &v) == 0)
+                s->loops[i].speed_div = (v >= 4.0f) ? 4 : (v >= 2.0f) ? 2 : 1;
         }
         return;
     }
@@ -1849,6 +2036,10 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
     if (strcmp(key, "loopB_volume") == 0) { s->loop_volume[1] = clampf((float)atof(val), 0.0f, 1.0f); return; }
     if (strcmp(key, "loopC_volume") == 0) { s->loop_volume[2] = clampf((float)atof(val), 0.0f, 1.0f); return; }
     if (strcmp(key, "loopD_volume") == 0) { s->loop_volume[3] = clampf((float)atof(val), 0.0f, 1.0f); return; }
+    if (strcmp(key, "loopA_send") == 0) { s->loop_send[0] = clampf((float)atof(val), 0.0f, 1.0f); return; }
+    if (strcmp(key, "loopB_send") == 0) { s->loop_send[1] = clampf((float)atof(val), 0.0f, 1.0f); return; }
+    if (strcmp(key, "loopC_send") == 0) { s->loop_send[2] = clampf((float)atof(val), 0.0f, 1.0f); return; }
+    if (strcmp(key, "loopD_send") == 0) { s->loop_send[3] = clampf((float)atof(val), 0.0f, 1.0f); return; }
     /* master_loops_overview — access "read" — deliberately unhandled */
 
     int li;
@@ -1868,6 +2059,10 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
     if (strcmp(key, "loopB_volume") == 0)  return snprintf(buf, len, "%.3f", s->loop_volume[1]);
     if (strcmp(key, "loopC_volume") == 0)  return snprintf(buf, len, "%.3f", s->loop_volume[2]);
     if (strcmp(key, "loopD_volume") == 0)  return snprintf(buf, len, "%.3f", s->loop_volume[3]);
+    if (strcmp(key, "loopA_send") == 0)    return snprintf(buf, len, "%.3f", s->loop_send[0]);
+    if (strcmp(key, "loopB_send") == 0)    return snprintf(buf, len, "%.3f", s->loop_send[1]);
+    if (strcmp(key, "loopC_send") == 0)    return snprintf(buf, len, "%.3f", s->loop_send[2]);
+    if (strcmp(key, "loopD_send") == 0)    return snprintf(buf, len, "%.3f", s->loop_send[3]);
     if (strcmp(key, "master_loops_overview") == 0) return master_loops_overview_text(s, buf, len);
     if (strcmp(key, "master_record") == 0) {
         /* Button renamed Rec->Catch->Moment->HOLD->REC (2026-08-25). The
@@ -1916,19 +2111,21 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
         char json[1536];   /* grew with loopX_half_speed */
         int pos = snprintf(json, sizeof(json), "{\"input_routing\":%d", s->input_routing);
         for (int i = 0; i < NUM_LOOPS; i++) {
-            pos += snprintf(json + pos, sizeof(json) - pos, ",\"loop%c_volume\":%.4f",
-                             LOOP_LETTERS[i], s->loop_volume[i]);
+            pos += snprintf(json + pos, sizeof(json) - pos,
+                             ",\"loop%c_volume\":%.4f,\"loop%c_send\":%.4f",
+                             LOOP_LETTERS[i], s->loop_volume[i],
+                             LOOP_LETTERS[i], s->loop_send[i]);
         }
         for (int i = 0; i < NUM_LOOPS; i++) {
             const loop_engine_t *loop = &s->loops[i];
             pos += snprintf(json + pos, sizeof(json) - pos,
                 ",\"loop%c_decay_rate\":%.4f,\"loop%c_wow\":%.4f,\"loop%c_hf_loss\":%.4f,"
                 "\"loop%c_hiss\":%.4f,\"loop%c_saturation\":%.4f,\"loop%c_chaos\":%.4f,"
-                "\"loop%c_half_speed\":%d",
+                "\"loop%c_speed\":%d",
                 LOOP_LETTERS[i], loop->decay_rate, LOOP_LETTERS[i], loop->wow_ramp.target,
                 LOOP_LETTERS[i], loop->hf_loss_ramp.target, LOOP_LETTERS[i], loop->hiss_ramp.target,
                 LOOP_LETTERS[i], loop->saturation, LOOP_LETTERS[i], loop->crackle_ramp.target,
-                LOOP_LETTERS[i], loop->half_speed);
+                LOOP_LETTERS[i], loop->speed_div);
         }
         pos += snprintf(json + pos, sizeof(json) - pos, "}");
         if (pos >= (int)sizeof(json) || pos >= len) return -1;
@@ -1947,9 +2144,13 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                 ",{\"key\":\"loop%c_volume\",\"name\":\"%c\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":%.2f,\"step\":0.01,\"unit\":\"%%\","
                   "\"display_format\":\"%%.0f\"}"
-                ",{\"key\":\"loop%c_half_speed\",\"name\":\"%c\",\"type\":\"enum\","
-                  "\"options\":[\"1x\",\"1/2\"]}",
+                ",{\"key\":\"loop%c_speed\",\"name\":\"%c\",\"type\":\"enum\","
+                  "\"options\":[\"1x\",\"1/2\",\"1/4\"]}"
+                ",{\"key\":\"loop%c_send\",\"name\":\"%c\",\"type\":\"float\","
+                  "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01,\"unit\":\"%%\","
+                  "\"display_format\":\"%%.0f\"}",
                 LOOP_LETTERS[i], LOOP_LETTERS[i], (double)DEFAULT_LOOP_VOLUME,
+                LOOP_LETTERS[i], LOOP_LETTERS[i],
                 LOOP_LETTERS[i], LOOP_LETTERS[i]);
         }
         /* "enum", not "string": a read-only string routes through the opaque
@@ -2060,26 +2261,33 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
             "{\"modes\":null,\"levels\":{"
             "\"root\":{\"label\":\"Forgetful\","
               "\"knobs\":[\"input_routing\",\"master_loops_overview\",\"master_record\",\"master_freeze\","
-                "\"\",\"\",\"\",\"\"],"
+                "\"loopA_volume\",\"loopB_volume\",\"loopC_volume\",\"loopD_volume\"],"
               "\"params\":["
                 "{\"key\":\"input_routing\",\"label\":\"Send\"},"
                 "{\"key\":\"master_loops_overview\",\"label\":\"ECHO\"},"
                 "{\"key\":\"master_record\",\"label\":\"REC\"},"
                 "{\"key\":\"master_freeze\",\"label\":\"Freeze\"},"
-                "{\"level\":\"mixer\",\"label\":\"Mixer\"},"
+                "{\"key\":\"loopA_volume\",\"label\":\"A\"},"
+                "{\"key\":\"loopB_volume\",\"label\":\"B\"},"
+                "{\"key\":\"loopC_volume\",\"label\":\"C\"},"
+                "{\"key\":\"loopD_volume\",\"label\":\"D\"},"
+                "{\"level\":\"distance\",\"label\":\"Distance\"},"
                 "{\"level\":\"loopA\",\"label\":\"A\"},"
                 "{\"level\":\"loopB\",\"label\":\"B\"},"
                 "{\"level\":\"loopC\",\"label\":\"C\"},"
                 "{\"level\":\"loopD\",\"label\":\"D\"}]}"
-              /* Mixer: the four speeds on the top row, the four volumes
-               * underneath, so each memory reads as a column. Sits between
+              /* Distance: playback speed on the top row, reverb send
+               * underneath, so each memory reads as a column. Both controls
+               * push a memory further away — slower and lower, or wetter
+               * and less located — which is why it is no longer the Mixer
+               * now that the volumes have gone back to Main. Sits between
                * Main and the memory pages because the nav entries in root's
                * "params" are what the planner walks to order the bank. */
-              ",\"mixer\":{\"label\":\"Mixer\",\"knobs\":["
-                "\"loopA_half_speed\",\"loopB_half_speed\","
-                "\"loopC_half_speed\",\"loopD_half_speed\","
-                "\"loopA_volume\",\"loopB_volume\","
-                "\"loopC_volume\",\"loopD_volume\"]}");
+              ",\"distance\":{\"label\":\"Distance\",\"knobs\":["
+                "\"loopA_speed\",\"loopB_speed\","
+                "\"loopC_speed\",\"loopD_speed\","
+                "\"loopA_send\",\"loopB_send\","
+                "\"loopC_send\",\"loopD_send\"]}");
         for (int i = 0; i < NUM_LOOPS; i++) {
             char c = LOOP_LETTERS[i];
             pos += snprintf(json + pos, sizeof(json) - pos,

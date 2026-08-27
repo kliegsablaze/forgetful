@@ -19,7 +19,7 @@
  * depends on how long the recording is.
  *
  * Covers:
- *   0. chain_params / ui_hierarchy shape — exactly 44 entries (8 master +
+ *   0. chain_params / ui_hierarchy shape — exactly 48 entries (8 master +
  *      4x8 loop), every expected key present in both, including
  *      master_record/master_freeze, and no OFF option in Route's options
  *      list.
@@ -352,8 +352,8 @@ int main(void) {
         int key_count = 0;
         const char *p = cp;
         while ((p = strstr(p, "\"key\":\"")) != NULL) { key_count++; p += 7; }
-        check(key_count == 44,
-              "test0: chain_params has exactly 44 entries (8 master + 4x9 loop; the ninth is loopX_half_speed, added with the Mixer page)");
+        check(key_count == 48,
+              "test0: chain_params has exactly 48 entries (8 master + 4x10 loop; loopX_speed and loopX_send came with the Distance page)");
 
         n = api->get_param(inst, "ui_hierarchy", hier, sizeof(hier));
         check(n > 0, "test0: ui_hierarchy readable");
@@ -375,9 +375,8 @@ int main(void) {
         }
         /* Main's top row is Route/Status/Rec/Freeze; its bottom row is
          * deliberately empty since the volumes moved to the Mixer page. */
-        check(strstr(hier, "\"master_loops_overview\",\"master_record\",\"master_freeze\",\"\",\"\",\"\",\"\"") != NULL,
-              "test0: Main's top row is Route/Status/Rec/Freeze and its "
-              "bottom row is blank");
+        check(strstr(hier, "\"master_loops_overview\",\"master_record\",\"master_freeze\",\"loopA_volume\"") != NULL,
+              "test0: Main is Route/Status/Rec/Freeze over the four volumes");
 
         /* every expected key, in both blobs */
         static const char *master_keys[] = {
@@ -1696,49 +1695,89 @@ int main(void) {
     }
 
     /* ---------------------------------------------------------------
-     * test26: the Mixer page, and half speed.
+     * test26: the Distance page — speed over reverb send.
      * --------------------------------------------------------------- */
     {
         void *inst = api->create_instance(".", NULL);
         check(inst != NULL, "test26: create_instance");
         static char js[16384];
         int n = api->get_param(inst, "ui_hierarchy", js, sizeof(js));
-        check(n > 0, "test26: ui_hierarchy is served");
-        check(strstr(js, "\"mixer\"") != NULL, "test26: a mixer level exists");
-        /* Mixer must be the FIRST nav entry, i.e. the page right after
-         * Main — the planner orders the bank by walking root's params. */
-        const char *m = strstr(js, "{\"level\":\"mixer\"");
+        check(n > 0 && strstr(js, "\"distance\"") != NULL, "test26: a distance level exists");
+        const char *d = strstr(js, "{\"level\":\"distance\"");
         const char *a = strstr(js, "{\"level\":\"loopA\"");
-        check(m && a && m < a, "test26: Mixer sits between Main and the memory pages");
-        /* Main's bottom row is empty, the volumes having moved */
-        check(strstr(js, "\"master_freeze\",\"\",\"\",\"\",\"\"") != NULL,
-              "test26: Main's bottom row is blank");
-        check(strstr(js, "\"loopA_half_speed\",\"loopB_half_speed\"") != NULL &&
-              strstr(js, "\"loopA_volume\",\"loopB_volume\"") != NULL,
-              "test26: Mixer carries the speeds over the volumes");
+        check(d && a && d < a, "test26: Distance sits between Main and the memory pages");
+        check(strstr(js, "\"loopA_speed\",\"loopB_speed\"") != NULL &&
+              strstr(js, "\"loopA_send\",\"loopB_send\"") != NULL,
+              "test26: Distance carries the speeds over the sends");
+        check(strstr(js, "\"master_freeze\",\"loopA_volume\"") != NULL,
+              "test26: the volumes are back on Main");
 
-        n = api->get_param(inst, "chain_params", js, sizeof(js));
-        check(n > 0 && strstr(js, "loopD_half_speed") != NULL,
-              "test26: half_speed is declared in chain_params");
-
-        /* "1x" must not read back as half: atoi("1x") is 1, so an
+        /* "1x" must not read back as a division: atoi("1x") is 1, so an
          * index-only parse selects the wrong option. */
-        api->set_param(inst, "loopA_half_speed", "1/2");
         char v[32];
-        api->get_param(inst, "loopA_half_speed", v, sizeof(v));
-        check(strcmp(v, "1/2") == 0, "test26: reads back 1/2");
-        api->set_param(inst, "loopA_half_speed", "1x");
-        api->get_param(inst, "loopA_half_speed", v, sizeof(v));
-        check(strcmp(v, "1x") == 0, "test26: and back to 1x again");
+        const char *want[3] = { "1x", "1/2", "1/4" };
+        for (int k = 0; k < 3; k++) {
+            api->set_param(inst, "loopA_speed", want[k]);
+            api->get_param(inst, "loopA_speed", v, sizeof(v));
+            check(strcmp(v, want[k]) == 0, "test26: speed reads back what was written");
+        }
 
-        /* it survives a state round-trip, or a saved set loses it */
-        api->set_param(inst, "loopC_half_speed", "1/2");
+        /* both survive a state round-trip, or a saved set loses them */
+        api->set_param(inst, "loopC_speed", "1/4");
+        api->set_param(inst, "loopC_send", "0.75");
         api->get_param(inst, "state", js, sizeof(js));
         void *i2 = api->create_instance(".", NULL);
         api->set_param(i2, "state", js);
-        api->get_param(i2, "loopC_half_speed", v, sizeof(v));
-        check(strcmp(v, "1/2") == 0, "test26: half speed survives a state round-trip");
+        api->get_param(i2, "loopC_speed", v, sizeof(v));
+        check(strcmp(v, "1/4") == 0, "test26: speed survives a state round-trip");
+        api->get_param(i2, "loopC_send", v, sizeof(v));
+        check(atof(v) > 0.7 && atof(v) < 0.8, "test26: send survives a state round-trip");
         api->destroy_instance(i2);
+        api->destroy_instance(inst);
+    }
+
+    /* ---------------------------------------------------------------
+     * test27: the send reverb rings on after its source stops, and the
+     * send is POST-FADER.
+     * --------------------------------------------------------------- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        check(inst != NULL, "test27: create_instance");
+        api->set_param(inst, "loopA_decay_rate", "600");
+        api->set_param(inst, "input_routing", "A");
+        api->set_param(inst, "loopA_hiss", "0");
+        api->set_param(inst, "loopA_chaos", "0");
+        api->set_param(inst, "loopA_wow", "0");
+        api->set_param(inst, "loopA_hf_loss", "0");
+        api->set_param(inst, "loopA_saturation", "0");
+        api->set_param(inst, "loopA_volume", "1");
+        api->set_param(inst, "loopA_send", "1");
+        press_record(api, inst);
+        int16_t tb[BLOCK_FRAMES * 2];
+        float phase = 0.0f;
+        for (int b = 0; b < 150; b++) {
+            fill_tone(tb, BLOCK_FRAMES, b < 20 ? 0.40f : 0.0f, 300.0f, &phase);
+            api->process_block(inst, tb, BLOCK_FRAMES);
+        }
+        api->set_param(inst, "master_record", "STOP!");
+        run_silence(api, inst, BLOCK_FRAMES * 160);   /* one pass feeds the tank */
+        api->set_param(inst, "loopA_volume", "0");    /* dry AND send now muted */
+
+        double first = 0.0, later = 0.0;
+        for (int seg = 0; seg < 2; seg++) {
+            double tot = 0.0; long n = 0;
+            for (int b = 0; b < 200; b++) {
+                fill_silence(tb, BLOCK_FRAMES);
+                api->process_block(inst, tb, BLOCK_FRAMES);
+                for (int i = 0; i < BLOCK_FRAMES * 2; i += 2) { tot += (double)tb[i]*tb[i]; n++; }
+            }
+            if (seg == 0) first = sqrt(tot/(double)n); else later = sqrt(tot/(double)n);
+        }
+        check(first > 50.0,
+              "test27: the tail rings on after the source is muted — the "
+              "reverb is fed by its own network, not by the send");
+        check(later < first,
+              "test27: and it decays rather than sustaining or growing");
         api->destroy_instance(inst);
     }
 
