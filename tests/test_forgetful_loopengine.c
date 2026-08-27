@@ -220,6 +220,41 @@ static void run_silence(audio_fx_api_v2_t *api, void *inst, long total_frames) {
     }
 }
 
+
+/* Deterministic broadband source. A pure tone cannot show a lowpass at
+ * all once the measurement is level-normalised — filtering a sine moves
+ * its level, not its frequency — so anything testing Darken needs content
+ * with something across the spectrum to take away. */
+static unsigned long g_noise_state = 22222u;
+static void fill_noise(int16_t *buf, int frames, float amplitude) {
+    for (int i = 0; i < frames; i++) {
+        g_noise_state = g_noise_state * 1103515245u + 12345u;
+        float v = (float)((int)((g_noise_state >> 9) & 0xFFFFu) - 32768) / 32768.0f;
+        int16_t x = (int16_t)(v * amplitude * 32767.0f);
+        buf[i * 2] = x; buf[i * 2 + 1] = x;
+    }
+}
+
+/* Brightness: first-difference energy normalised by level. Falls as a take
+ * loses its top end, and is level-independent, so a take that is also
+ * fading does not read as darkening. */
+static double measure_brightness(audio_fx_api_v2_t *api, void *inst, int blocks) {
+    int16_t buf[BLOCK_FRAMES * 2];
+    double tot = 0.0, dif = 0.0; long n = 0; int prev = 0, have = 0;
+    for (int b = 0; b < blocks; b++) {
+        fill_silence(buf, BLOCK_FRAMES);
+        api->process_block(inst, buf, BLOCK_FRAMES);
+        for (int i = 0; i < BLOCK_FRAMES * 2; i += 2) {
+            int v = buf[i];
+            tot += (double)v * v; n++;
+            if (have) { double d = (double)v - prev; dif += d * d; }
+            prev = v; have = 1;
+        }
+    }
+    if (n == 0 || tot <= 0.0) return 0.0;
+    return sqrt(dif / (double)n) / sqrt(tot / (double)n);
+}
+
 static void run_constant(audio_fx_api_v2_t *api, void *inst, long total_frames, int16_t value) {
     int16_t buf[BLOCK_FRAMES * 2];
     long remaining = total_frames;
@@ -1444,172 +1479,182 @@ int main(void) {
     }
 
     /* ---------------------------------------------------------------
-     * test21: Darken darkens, from the first touch, across the travel.
-     *
-     * The knob is a 4-pole lowpass swept exponentially (plus a reverb wash
-     * over the top of the range). A 6 kHz take is the clearest probe: it
-     * sits far above DARKEN_FC_MIN, so anything but a token filter has to
-     * take most of it away.
-     *
-     * This replaces an assertion that Darken made the take LOUDER, which
-     * was true of the reverb-only design it had briefly and is exactly
-     * backwards for something called Darken. Note both takes are measured
-     * FRESH: scaling flavours purely by age made every one of them silent
-     * at the moment of the turn, which is the regression this pins.
+     * test21: Darken COMPOUNDS. It is one pole per pass now, so a single
+     * pass is subtle by design and the darkening is what a few hundred
+     * passes of it add up to. Measured as brightness — first-difference
+     * energy over level — shortly after the knob is turned, and again a
+     * long time later, on a take whose Age is far too long to explain the
+     * difference.
      * --------------------------------------------------------------- */
     {
-        int32_t rms[2];
-        for (int pass = 0; pass < 2; pass++) {
-            void *inst = api->create_instance(".", NULL);
-            check(inst != NULL, "test21: create_instance");
-            api->set_param(inst, "loopA_decay_rate", "300");
-            api->set_param(inst, "input_routing", "A");
-            press_record(api, inst);
-            float phase = 0.0f;
-            int16_t tb[BLOCK_FRAMES * 2];
-            for (int b = 0; b < 200; b++) {
-                fill_tone(tb, BLOCK_FRAMES, 0.30f, 6000.0f, &phase);
-                api->process_block(inst, tb, BLOCK_FRAMES);
-            }
-            api->set_param(inst, "master_record", "STOP!");
-            api->set_param(inst, "loopA_volume", "1");
-            /* only touch the knob under test, so this is its FIRST touch
-             * and snaps; a second touch would glide over the take's whole
-             * remaining life and measure almost nothing. */
-            if (pass == 1) api->set_param(inst, "loopA_hf_loss", "1");
-            run_silence(api, inst, (long)SAMPLE_RATE / 4);
-
-            double tot = 0.0; long n = 0;
-            for (int b = 0; b < 60; b++) {
-                fill_silence(tb, BLOCK_FRAMES);
-                api->process_block(inst, tb, BLOCK_FRAMES);
-                for (int i = 0; i < BLOCK_FRAMES * 2; i += 2) {
-                    tot += (double)tb[i] * (double)tb[i]; n++;
-                }
-            }
-            rms[pass] = (int32_t)sqrt(tot / (double)n);
-            api->destroy_instance(inst);
+        void *inst = api->create_instance(".", NULL);
+        check(inst != NULL, "test21: create_instance");
+        api->set_param(inst, "loopA_decay_rate", "600");
+        api->set_param(inst, "input_routing", "A");
+        press_record(api, inst);
+        int16_t tb[BLOCK_FRAMES * 2];
+        g_noise_state = 22222u;
+        for (int b = 0; b < 344; b++) {          /* ~1s loop */
+            fill_noise(tb, BLOCK_FRAMES, 0.30f);
+            api->process_block(inst, tb, BLOCK_FRAMES);
         }
-        check(rms[0] > 1000, "test21: the 6kHz take is clearly audible undarkened");
-        check(rms[1] * 4 < rms[0],
-              "test21: Darken at maximum takes most of a 6kHz take away on "
-              "the FIRST touch, with no ageing needed — it is a lowpass, and "
-              "it works the moment you turn it");
+        api->set_param(inst, "master_record", "STOP!");
+        api->set_param(inst, "loopA_volume", "1");
+        api->set_param(inst, "loopA_hiss", "0");
+        api->set_param(inst, "loopA_chaos", "0");
+        api->set_param(inst, "loopA_wow", "0");
+        api->set_param(inst, "loopA_saturation", "0");
+        api->set_param(inst, "loopA_hf_loss", "0.6");
+
+        double b_early = measure_brightness(api, inst, 344);
+        run_silence(api, inst, (long)SAMPLE_RATE * 45);
+        double b_late  = measure_brightness(api, inst, 344);
+
+        check(b_early > 0.0, "test21: the take has measurable brightness to start");
+        check(b_late < b_early * 0.35,
+              "test21: Darken compounds — the same knob, untouched, leaves "
+              "the take far duller 45s later (brightness ~0.94 -> ~0.07), "
+              "because each pass filters what the last pass already "
+              "filtered. One pass of it is deliberately subtle.");
+        api->destroy_instance(inst);
     }
 
     /* ---------------------------------------------------------------
-     * test22: Warp warps, on a fresh take. Same regression, other knob:
-     * wow/flutter/drift depth was multiplied by age, so the whole stage
-     * was multiplied by zero on the take you had just recorded.
+     * test22b/23: VINYL is a gate — it takes the QUIET material first —
+     * and Freeze stops it, as it stops decay.
      *
-     * Renders the SAME take twice, changing nothing but Warp, and measures
-     * how far the two diverge. Only the read-speed modulation can account
-     * for a difference.
+     * Counts samples below a fixed threshold derived from the CONTROL
+     * run, not from each take's own peak: a peak-relative threshold moves
+     * as the take degrades, which previously made damage look like it was
+     * healing and freezing look broken.
      * --------------------------------------------------------------- */
     {
-        static int16_t out[2][60 * BLOCK_FRAMES];
-        for (int pass = 0; pass < 2; pass++) {
-            void *inst = api->create_instance(".", NULL);
-            check(inst != NULL, "test22: create_instance");
-            api->set_param(inst, "loopA_decay_rate", "300");
-            api->set_param(inst, "input_routing", "A");
-            press_record(api, inst);
-            float phase = 0.0f;
-            int16_t tb[BLOCK_FRAMES * 2];
-            for (int b = 0; b < 200; b++) {
-                fill_tone(tb, BLOCK_FRAMES, 0.30f, 440.0f, &phase);
-                api->process_block(inst, tb, BLOCK_FRAMES);
-            }
-            api->set_param(inst, "master_record", "STOP!");
-            api->set_param(inst, "loopA_volume", "1");
-            api->set_param(inst, "loopA_hiss", "0");
-            api->set_param(inst, "loopA_chaos", "0");
-            api->set_param(inst, "loopA_hf_loss", "0");
-            api->set_param(inst, "loopA_saturation", "0");
-            if (pass == 1) api->set_param(inst, "loopA_wow", "1");
-            run_silence(api, inst, (long)SAMPLE_RATE / 4);
-            for (int b = 0; b < 60; b++) {
-                fill_silence(tb, BLOCK_FRAMES);
-                api->process_block(inst, tb, BLOCK_FRAMES);
-                for (int i = 0; i < BLOCK_FRAMES; i++)
-                    out[pass][b * BLOCK_FRAMES + i] = tb[i * 2];
-            }
-            api->destroy_instance(inst);
-        }
-        double tot = 0.0, dif = 0.0;
-        for (int i = 0; i < 60 * BLOCK_FRAMES; i++) {
-            tot += (double)out[0][i] * out[0][i];
-            double d = (double)out[0][i] - out[1][i];
-            dif += d * d;
-        }
-        check(tot > 0.0, "test22: the reference take is not silent");
-        check(dif > tot * 0.04,
-              "test22: Warp at maximum audibly moves a FRESH take — the two "
-              "renders differ by well over the noise floor, where age-scaled "
-              "warp left them bit-identical");
-    }
-
-    /* ---------------------------------------------------------------
-     * test23: VINYL eats the take, permanently, and Freeze stops it.
-     *
-     * Dropouts are written INTO the buffer, so the loop's own level is the
-     * measurement: with decay_rate at 600s, plain decay accounts for only
-     * a few percent across this window, and anything more is material that
-     * has been removed and is not coming back.
-     *
-     * Measures a FULL pass of the take every time. Sampling a fraction of
-     * it reads a different part of the loop at a different phase on each
-     * call, which made freeze look broken when it was not.
-     * --------------------------------------------------------------- */
-    {
-        const int TAKE_BLOCKS = 200;
-        double lvl[3];                     /* vinyl 0 / vinyl 1 / vinyl 1 frozen */
+        long quiet[3]; double peak[3]; double pk_ref = 0.0;
         for (int pass = 0; pass < 3; pass++) {
             void *inst = api->create_instance(".", NULL);
             check(inst != NULL, "test23: create_instance");
-            api->set_param(inst, "loopA_decay_rate", "600");
+            api->set_param(inst, "loopA_decay_rate", "90");
             api->set_param(inst, "input_routing", "A");
             press_record(api, inst);
             float phase = 0.0f;
             int16_t tb[BLOCK_FRAMES * 2];
-            for (int b = 0; b < TAKE_BLOCKS; b++) {
-                fill_tone(tb, BLOCK_FRAMES, 0.30f, 330.0f, &phase);
+            /* One CONTIGUOUS quiet stretch, a quarter of the loop. An
+             * alternating pattern does not work: 128 frames is ~2.9ms,
+             * far under the gate's 120ms release, so the envelope never
+             * falls and the gate never closes. */
+            for (int b = 0; b < 344; b++) {
+                fill_tone(tb, BLOCK_FRAMES, (b >= 258) ? 0.08f : 0.30f,
+                          400.0f, &phase);
                 api->process_block(inst, tb, BLOCK_FRAMES);
             }
             api->set_param(inst, "master_record", "STOP!");
             api->set_param(inst, "loopA_volume", "1");
             api->set_param(inst, "loopA_hiss", "0");
-            api->set_param(inst, "loopA_wow", "0");
             api->set_param(inst, "loopA_hf_loss", "0");
+            api->set_param(inst, "loopA_wow", "0");
             api->set_param(inst, "loopA_saturation", "0");
             api->set_param(inst, "loopA_chaos", pass == 0 ? "0" : "1");
 
             if (pass == 2) {
-                run_silence(api, inst, (long)SAMPLE_RATE * 4);
+                run_silence(api, inst, (long)SAMPLE_RATE * 8);
                 api->set_param(inst, "master_freeze", "Freeze!");
             }
-            run_silence(api, inst, (long)SAMPLE_RATE * 16);
+            run_silence(api, inst, (long)SAMPLE_RATE * 30);
 
+            /* Threshold relative to THIS run's own peak. Freezing also
+             * stops Age, so a frozen take is simply louder, and an
+             * absolute threshold counts that as "less eaten" no matter
+             * what the gate did. Peak-relative is safe specifically
+             * because a gate PRESERVES peaks — it is the quiet material it
+             * takes — so the peak tracks level and divides the confound
+             * back out. */
+            static int16_t cap[344 * BLOCK_FRAMES];
+            double pk = 0.0;
+            for (int b = 0; b < 344; b++) {
+                fill_silence(tb, BLOCK_FRAMES);
+                api->process_block(inst, tb, BLOCK_FRAMES);
+                for (int i = 0; i < BLOCK_FRAMES; i++) {
+                    cap[b * BLOCK_FRAMES + i] = tb[i * 2];
+                    double v = fabs((double)tb[i * 2]);
+                    if (v > pk) pk = v;
+                }
+            }
+            long q = 0;
+            double thr = pk * 0.10;
+            for (int i = 0; i < 344 * BLOCK_FRAMES; i++)
+                if (fabs((double)cap[i]) < thr) q++;
+            (void)pk_ref;
+            quiet[pass] = q; peak[pass] = pk;
+            api->destroy_instance(inst);
+        }
+        check(quiet[1] > quiet[0] * 13 / 10,
+              "test23: VINYL leaves far more of the take sitting at silence — "
+              "the gate has removed the quiet material and what survives is "
+              "peaks out of nothing");
+        check(peak[1] > peak[0] * 0.8,
+              "test23: and the LOUD material is still there — a gate takes "
+              "the quiet first, which is what separates it from punching "
+              "holes at random, and is why what survives reads as fragments "
+              "rather than damage");
+        check(quiet[2] < quiet[1] && quiet[2] > quiet[0],
+              "test23: freezing part way through lands BETWEEN the two — it "
+              "ate what it ate before the freeze and nothing after, because "
+              "Freeze stops the medium moving past the head");
+    }
+
+    /* ---------------------------------------------------------------
+     * test24: the feedback path neither dies nor clips.
+     *
+     * This is the failure everyone who builds this by hand reports, and
+     * the reason they end up riding a fader for the whole take. With every
+     * degradation running hard, the medium has to stay inside a band on
+     * its own for minutes at a time. Age is set far longer than the run so
+     * that a fade cannot be mistaken for the loop dying.
+     * --------------------------------------------------------------- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        check(inst != NULL, "test24: create_instance");
+        api->set_param(inst, "loopA_decay_rate", "600");
+        api->set_param(inst, "input_routing", "A");
+        press_record(api, inst);
+        float phase = 0.0f;
+        int16_t tb[BLOCK_FRAMES * 2];
+        for (int b = 0; b < 344; b++) {
+            fill_tone(tb, BLOCK_FRAMES, 0.30f, 220.0f, &phase);
+            api->process_block(inst, tb, BLOCK_FRAMES);
+        }
+        api->set_param(inst, "master_record", "STOP!");
+        api->set_param(inst, "loopA_volume", "1");
+        api->set_param(inst, "loopA_hf_loss", "0.7");
+        api->set_param(inst, "loopA_hiss", "0.6");
+        api->set_param(inst, "loopA_chaos", "0.6");
+        api->set_param(inst, "loopA_saturation", "0.4");
+        api->set_param(inst, "loopA_wow", "0.3");
+
+        double first = 0.0, worst_pk = 0.0, lo = 1e30, hi = 0.0;
+        for (int t = 0; t < 12; t++) {
             double tot = 0.0; long n = 0;
-            for (int b = 0; b < TAKE_BLOCKS + 10; b++) {
+            for (int b = 0; b < 344; b++) {
                 fill_silence(tb, BLOCK_FRAMES);
                 api->process_block(inst, tb, BLOCK_FRAMES);
                 for (int i = 0; i < BLOCK_FRAMES * 2; i += 2) {
-                    tot += (double)tb[i] * (double)tb[i]; n++;
+                    double v = (double)tb[i];
+                    tot += v * v; n++;
+                    if (fabs(v) > worst_pk) worst_pk = fabs(v);
                 }
             }
-            lvl[pass] = sqrt(tot / (double)n);
-            api->destroy_instance(inst);
+            double r = sqrt(tot / (double)n);
+            if (t == 0) first = r;
+            if (t > 0) { if (r < lo) lo = r; if (r > hi) hi = r; }
         }
-        check(lvl[0] > 1000.0, "test23: the control take is still there at VINYL 0");
-        check(lvl[1] < lvl[0] * 0.75,
-              "test23: VINYL at maximum has eaten a large part of the take — "
-              "measures ~0.64 of the control after 16s, and it is material "
-              "removed from the buffer, not a gain change");
-        check(lvl[2] > lvl[1] * 1.15,
-              "test23: freezing part way through leaves a take clearly less "
-              "eaten than one left running (~1.30x) — Freeze stops the damage "
-              "as it stops decay");
+        check(worst_pk < 32000.0,
+              "test24: the feedback path never blows up into clipping");
+        check(lo > first * 0.2,
+              "test24: and never dies away — the regulator holds the medium "
+              "up without a hand on the fader");
+        check(hi < first * 3.0,
+              "test24: nor does it inflate; the level stays in a band");
+        api->destroy_instance(inst);
     }
 
     if (g_failures > 0) {

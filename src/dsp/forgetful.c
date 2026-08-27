@@ -227,7 +227,7 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
 #define DRIFT_HOLD_SECONDS 0.9f   /* how often the drift picks a new target */
 #define DRIFT_GLIDE_SECONDS 0.35f /* how long it takes to get there */
 
-#define HISS_CEILING          0.040f /* Raised back up 2026-08-27, when hiss
+#define HISS_CEILING          0.020f /* Raised back up 2026-08-27, when hiss
                                       * stopped being constant and started
                                       * scaling with `age`: this is now the
                                       * level at FULL decay with the knob
@@ -266,29 +266,6 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * constant-density) clicks", the second half is "loud, AND getting
  * busier". See the LOOPING case's VINYL stage for the actual volume/
  * density split. First-pass constants, not confirmed by listening. */
-/* ---- VINYL dropouts: the medium losing material ----------------------
- * Crackle adds noise ON TOP of the take. Dropouts take the take AWAY, and
- * that is the half that actually sounds like the Disintegration Loops: a
- * tape shedding oxide does not get noisier, it gets HOLES, and what you
- * end up listening to is the gaps between what is left.
- *
- * These are written INTO the buffer, not applied at the output, so they
- * accumulate: every pass can punch a new hole and deepen an old one, and
- * none of it comes back. That is the point, and it is the only
- * irreversible thing on the module besides Erase — Freeze stops them,
- * exactly as it stops decay, so a frozen take stays as ruined as it was.
- *
- * The cursor advances one sample per tick INDEPENDENTLY of the read head.
- * Attenuating "wherever idx0 is" would leave gaps whenever Warp pushes
- * speed above 1 and the read head skips an index — and a single
- * un-attenuated sample in the middle of a hole is an impulse, i.e. a
- * click, which is exactly the bug already fixed once in the overdub
- * write. A private cursor cannot skip. */
-#define DROPOUT_MAX_RATE_HZ   3.0f   /* events/sec at full VINYL, fully aged */
-#define DROPOUT_MIN_MS        8.0f
-#define DROPOUT_MAX_MS       70.0f
-#define DROPOUT_DEPTH         0.12f  /* gain at the deepest point of a hole */
-
 #define CRACKLE_DUST_MAX_PROB 0.02f    /* per-sample trigger probability at density_factor=1 */
 #define CRACKLE_POP_MAX_PROB  0.0006f
 #define CRACKLE_ENV_DECAY     0.75f    /* per-sample envelope decay -> ~15-sample tick tail */
@@ -335,9 +312,40 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * still the dark wall asked for on 2026-08-27 while everything below it
  * is audibly, gradually losing brightness. The wash is fed the FILTERED
  * signal, so the tail is as dark as the loop is. */
-#define DARKEN_POLES         4
-#define DARKEN_FC_MAX    18000.0f
-#define DARKEN_FC_MIN      200.0f
+/* ---- The feedback path's level regulator -----------------------------
+ * Everyone who builds this by hand reports the same two failures: the
+ * loop "dies away" or "blows up into clipping", and the fix is riding the
+ * fader for the whole take. A gate makes it worse — it removes material,
+ * the level drops, and the thing gets sucked into the void.
+ *
+ * So the regulator is part of the design, not a safety net. It holds the
+ * MEDIUM at the level the take was recorded at, over a multi-second time
+ * constant so it never pumps, with the boost clamped so a loop that has
+ * genuinely been eaten is allowed to die rather than being amplified into
+ * pure noise. The fade you actually hear is Age, applied at the output,
+ * which stays completely separate from this.
+ * --------------------------------------------------------------------- */
+#define MEDIUM_LEVEL_TAU_S    2.0f
+#define MEDIUM_GAIN_TAU_S     3.0f
+#define MEDIUM_GAIN_MIN       0.5f
+#define MEDIUM_GAIN_MAX       2.5f
+
+/* ---- VINYL: the gate. Loss of fragments ------------------------------
+ * Replaces the random dropouts. A gate is the musical version of the same
+ * idea: it takes the QUIET material first, so what survives is peaks
+ * surfacing out of silence — which is what the record sounds like —
+ * rather than arbitrary holes punched at random.
+ *
+ * The threshold rises with age, so it keeps finding new material to eat
+ * instead of converging after one pass. Soft-kneed (a squared ratio)
+ * rather than switched, so nothing clicks. */
+#define GATE_MAX_THRESHOLD    0.35f
+#define GATE_ENV_ATTACK_S     0.003f
+#define GATE_ENV_RELEASE_S    0.120f
+
+#define DARKEN_POLES         1
+#define DARKEN_FC_MAX    20000.0f
+#define DARKEN_FC_MIN     1500.0f
 #define DARKEN_WASH_KNEE     0.55f
 #define DARKEN_DAMPING       0.55f /* comb damping at full wet — how dark the
                                     * wash goes. Was 0.4; raised 2026-08-27
@@ -539,12 +547,22 @@ typedef struct {
 
     /* degradation */
     float memory;
-    int   dropout_left, dropout_len, dropout_cursor;
+    int   medium_last_idx;   /* write-back cursor, see the LOOPING case */
+    float medium_level, medium_gain;   /* the level regulator */
+    float record_abs_sum;              /* running x^2 while RECORDING, so the
+                                        * regulator's target costs nothing at
+                                        * close: scanning the whole take there
+                                        * would be an O(n) walk on the SPI
+                                        * callback. */
+    float medium_target;               /* level the take was recorded at */
+    float gate_env;                    /* VINYL gate envelope follower */
     float darken_lp_l[DARKEN_POLES], darken_lp_r[DARKEN_POLES];
     /* per-block, hoisted out of the sample loop: powf/expf once per block
      * per loop rather than 128 times. The chase behind them moves over
      * seconds, so block granularity is inaudible. */
-    float darken_a, darken_wash, darken_damp1, darken_fb, warp_amt, dropout_p;
+    float darken_a, darken_wash, darken_damp1, darken_fb, warp_amt;
+    float gate_thresh, gate_a, gate_r_coef, medium_level_a, medium_gain_a;
+    int   medium_active;
     float warp_drift, warp_drift_target;
     int   warp_drift_countdown;
     float hiss_lp_l, hiss_lp_r;  /* hiss-coloring filter state, see HISS_COLOR_COEFF */
@@ -734,8 +752,12 @@ static void reset_take(loop_engine_t *loop) {
     loop->overdub_last_idx = -1;
     loop->applied_wow = loop->applied_hf_loss = loop->applied_hiss = 0.0f;
     for (int k = 0; k < DARKEN_POLES; k++) loop->darken_lp_l[k] = loop->darken_lp_r[k] = 0.0f;
-    loop->dropout_left = loop->dropout_len = 0;
-    loop->dropout_cursor = 0;
+    loop->medium_last_idx = -1;
+    loop->medium_level = 0.0f;
+    loop->record_abs_sum = 0.0f;
+    loop->medium_gain = 1.0f;
+    loop->medium_target = 0.0f;
+    loop->gate_env = 0.0f;
     loop->warp_drift = loop->warp_drift_target = 0.0f;
     loop->warp_drift_countdown = 0;
     loop->applied_saturation = loop->applied_crackle = 0.0f;
@@ -760,6 +782,17 @@ static inline void overdub_add(loop_engine_t *loop, int idx, int16_t l, int16_t 
     loop->buffer[idx].r = (int16_t)nr;
 }
 
+/* One frame of the degraded signal written back onto the medium. SETS
+ * rather than adds — this is the tape being re-magnetised by what just
+ * came off it, not a layer on top. */
+static inline void medium_write(loop_engine_t *loop, int idx, float l, float r) {
+    float a = l * 32768.0f, b = r * 32768.0f;
+    if (a > 32767.0f) a = 32767.0f; else if (a < -32768.0f) a = -32768.0f;
+    if (b > 32767.0f) b = 32767.0f; else if (b < -32768.0f) b = -32768.0f;
+    loop->buffer[idx].l = (int16_t)a;
+    loop->buffer[idx].r = (int16_t)b;
+}
+
 static void close_recording(loop_engine_t *loop) {
     if (loop->write_head < MIN_RECORDED_FRAMES) {
         /* too short to be a usable take — discard, don't loop a click */
@@ -768,12 +801,26 @@ static void close_recording(loop_engine_t *loop) {
         return;
     }
     loop->recorded_length = loop->write_head;
+    /* grabbed before the per-take reset below wipes record_abs_sum */
+    float take_level = loop->record_abs_sum / (float)loop->recorded_length;
     loop->read_head = 0.0;
     loop->memory = 1.0f;
     loop->applied_wow = loop->applied_hf_loss = loop->applied_hiss = 0.0f;
     for (int k = 0; k < DARKEN_POLES; k++) loop->darken_lp_l[k] = loop->darken_lp_r[k] = 0.0f;
-    loop->dropout_left = loop->dropout_len = 0;
-    loop->dropout_cursor = 0;
+    loop->medium_last_idx = -1;
+    loop->medium_level = 0.0f;
+    loop->record_abs_sum = 0.0f;
+    loop->medium_gain = 1.0f;
+    loop->medium_target = 0.0f;
+    loop->gate_env = 0.0f;
+
+    /* The level the regulator holds the medium at. This has to come AFTER
+     * the per-take reset above, which zeroes it — setting it before was a
+     * silent no-op, the regulator stayed switched off, and the feedback
+     * path ran away to full-scale clipping in about thirty seconds. */
+    loop->medium_target = take_level;
+    loop->medium_level  = loop->medium_target;   /* both are mean-square */
+    loop->medium_gain   = 1.0f;
     loop->warp_drift = loop->warp_drift_target = 0.0f;
     loop->warp_drift_countdown = 0;
     loop->applied_saturation = loop->applied_crackle = 0.0f;
@@ -860,12 +907,12 @@ static void v2_destroy_instance(void *i) {
 
 /* ---- audio ---- */
 
-/* How much of a flavour knob is in force right now: some of it the moment
- * you turn it, the rest arriving as the take ages. See FLAVOUR_IMMEDIATE. */
+/* Every medium flavour is a PER-PASS rate now, so nothing needs an ageing
+ * multiplier bolted onto it: the compounding IS the ageing. See the
+ * write-back in the LOOPING case. */
 static inline float flavour_reach(float knob, float age) {
-    float a = clampf(age / FLAVOUR_AGE_FULL, 0.0f, 1.0f);
-    return clampf(knob, 0.0f, 1.0f) *
-           (FLAVOUR_IMMEDIATE + (1.0f - FLAVOUR_IMMEDIATE) * a);
+    (void)age;
+    return clampf(knob, 0.0f, 1.0f);
 }
 
 static void v2_process_block(void *instance, int16_t *lr, int frames) {
@@ -880,8 +927,28 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
         float age = 1.0f - clampf(loop->memory, 0.0f, 1.0f);
 
         loop->warp_amt = flavour_reach(loop->applied_wow, age);
-        loop->dropout_p = flavour_reach(loop->applied_crackle, age) *
-                          (DROPOUT_MAX_RATE_HZ / SAMPLE_RATE);
+        loop->gate_thresh = clampf(loop->applied_crackle, 0.0f, 1.0f) *
+                            GATE_MAX_THRESHOLD * age;
+        loop->gate_a       = 1.0f - expf(-1.0f / (GATE_ENV_ATTACK_S  * SAMPLE_RATE));
+        loop->gate_r_coef  = 1.0f - expf(-1.0f / (GATE_ENV_RELEASE_S * SAMPLE_RATE));
+        loop->medium_level_a = 1.0f - expf(-1.0f / (MEDIUM_LEVEL_TAU_S * SAMPLE_RATE));
+        loop->medium_gain_a  = 1.0f - expf(-1.0f / (MEDIUM_GAIN_TAU_S  * SAMPLE_RATE));
+        /* Nothing is re-printed unless something is actually degrading it:
+         * a clean loop must stay bit-exact, not slowly acquire the
+         * quantisation noise of being rewritten every pass. */
+        if (loop->medium_target > 1e-9f) {
+            float want = (loop->medium_level > 1e-9f)
+                       ? sqrtf(loop->medium_target / loop->medium_level)
+                       : MEDIUM_GAIN_MAX;
+            if (want < MEDIUM_GAIN_MIN) want = MEDIUM_GAIN_MIN;
+            if (want > MEDIUM_GAIN_MAX) want = MEDIUM_GAIN_MAX;
+            float ga = 1.0f - expf(-(float)frames / (MEDIUM_GAIN_TAU_S * SAMPLE_RATE));
+            loop->medium_gain += ga * (want - loop->medium_gain);
+        }
+        loop->medium_active = (loop->applied_hf_loss    > 0.001f) ||
+                              (loop->applied_hiss       > 0.001f) ||
+                              (loop->applied_saturation > 0.001f) ||
+                              (loop->applied_crackle    > 0.001f);
 
         float d = flavour_reach(loop->applied_hf_loss, age);
         if (d <= 0.0001f) {
@@ -926,6 +993,9 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                     loop->buffer[loop->write_head].l = raw_dry_l;
                     loop->buffer[loop->write_head].r = raw_dry_r;
                     loop->write_head++;
+                    float nl = (float)raw_dry_l / 32768.0f;
+                    float nr = (float)raw_dry_r / 32768.0f;
+                    loop->record_abs_sum += (nl * nl + nr * nr) * 0.5f;
                 }
                 /* Buffer-full is the one remaining AUTOMATIC close — a safety
                  * cap so forgetting to press REC again cannot record forever.
@@ -1050,34 +1120,6 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                     loop->overdub_last_idx = -1;
                 }
 
-                /* VINYL dropouts — see DROPOUT_MAX_RATE_HZ. Destructive, so
-                 * the hole is there on every later pass too, and deeper each
-                 * time one lands on top of another. */
-                if (loop->dropout_left > 0) {
-                    float pos = 1.0f - (float)loop->dropout_left / (float)loop->dropout_len;
-                    /* 1 at both edges, 0 in the middle — a parabola rather
-                     * than a cosine, to keep a transcendental out of the
-                     * sample loop. The edges are what stop a hole clicking. */
-                    float shape = 1.0f - 4.0f * pos * (1.0f - pos);
-                    float g = DROPOUT_DEPTH + (1.0f - DROPOUT_DEPTH) * shape;
-                    int c = loop->dropout_cursor;
-                    loop->buffer[c].l = (int16_t)(loop->buffer[c].l * g);
-                    loop->buffer[c].r = (int16_t)(loop->buffer[c].r * g);
-                    loop->dropout_cursor = (c + 1) % loop->recorded_length;
-                    loop->dropout_left--;
-                } else if (!loop->frozen && !loop->erasing &&
-                           rng_range(&loop->rng_state, 0.0f, 1.0f) < loop->dropout_p) {
-                    float ms = DROPOUT_MIN_MS +
-                               rng_range(&loop->rng_state, 0.0f, 1.0f) *
-                               (DROPOUT_MAX_MS - DROPOUT_MIN_MS);
-                    int len = (int)(ms * SAMPLE_RATE / 1000.0f);
-                    if (len > loop->recorded_length / 2) len = loop->recorded_length / 2;
-                    if (len > 0) {
-                        loop->dropout_left = loop->dropout_len = len;
-                        loop->dropout_cursor = idx0;
-                    }
-                }
-
                 float raw_l = (loop->buffer[idx0].l * (1.0f - frac) + loop->buffer[idx1].l * frac) / 32768.0f;
                 float raw_r = (loop->buffer[idx0].r * (1.0f - frac) + loop->buffer[idx1].r * frac) / 32768.0f;
 
@@ -1094,8 +1136,11 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * all driven by the SAME applied_hf_loss chase value, so
                  * presence/darkness/length build together off one knob.
                  * wet_amount=0 is an exact raw_l/raw_r passthrough. */
-                /* (a) the lowpass — this is the part you hear across the
-                 * whole travel. darken_a == 1 is an exact passthrough. */
+                /* Darken, one pole PER PASS. Subtle once; after a few
+                 * hundred passes through the write-back below it is the
+                 * dominant thing that has happened to the take. The knob is
+                 * a RATE, which is why the range stops at 1.5 kHz rather
+                 * than the 200 Hz a one-shot filter needed. */
                 float dark_l = raw_l, dark_r = raw_r;
                 if (loop->darken_a < 1.0f) {
                     for (int k = 0; k < DARKEN_POLES; k++) {
@@ -1105,31 +1150,7 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                         dark_r = loop->darken_lp_r[k];
                     }
                 }
-
-                /* (b) the wash, over the top of the range only. Fed the
-                 * filtered signal so the tail is as dark as the loop. */
-                float filt_l, filt_r;
-                if (loop->darken_wash > 0.0f) {
-                    float damp1 = loop->darken_damp1;
-                    float damp2 = 1.0f - damp1;
-                    float rev_input = (dark_l + dark_r) * 0.5f;
-                    float rev_l = 0.0f, rev_r = 0.0f;
-                    for (int c = 0; c < REVERB_NUM_COMBS; c++) {
-                        rev_l += reverb_comb_process(&loop->comb_l[c], rev_input, loop->darken_fb, damp1, damp2);
-                        rev_r += reverb_comb_process(&loop->comb_r[c], rev_input, loop->darken_fb, damp1, damp2);
-                    }
-                    rev_l *= 1.0f / (float)REVERB_NUM_COMBS;
-                    rev_r *= 1.0f / (float)REVERB_NUM_COMBS;
-                    for (int a = 0; a < REVERB_NUM_ALLPASS; a++) {
-                        rev_l = reverb_allpass_process(&loop->allpass_l[a], rev_l);
-                        rev_r = reverb_allpass_process(&loop->allpass_r[a], rev_r);
-                    }
-                    filt_l = dark_l + (rev_l - dark_l) * loop->darken_wash;
-                    filt_r = dark_r + (rev_r - dark_r) * loop->darken_wash;
-                } else {
-                    filt_l = dark_l;
-                    filt_r = dark_r;
-                }
+                float filt_l = dark_l, filt_r = dark_r;
 
                 /* 2. Saturation (Warmth) — crossfade between the dry
                  * (filtered) signal and a FIXED full-drive tanh curve,
@@ -1183,10 +1204,8 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 float noise_r = rng_bipolar(&loop->rng_state);
                 loop->hiss_lp_l += HISS_COLOR_COEFF * (noise_l - loop->hiss_lp_l);
                 loop->hiss_lp_r += HISS_COLOR_COEFF * (noise_r - loop->hiss_lp_r);
-                float hiss_only_l = (noise_l - loop->hiss_lp_l) * hiss_amount;
-                float hiss_only_r = (noise_r - loop->hiss_lp_r) * hiss_amount;
-                float hiss_l = sat_l;
-                float hiss_r = sat_r;
+                float hiss_l = sat_l + (noise_l - loop->hiss_lp_l) * hiss_amount;
+                float hiss_r = sat_r + (noise_r - loop->hiss_lp_r) * hiss_amount;
 
                 /* 4. VINYL crackle — mixed in ADDITIVELY right alongside
                  * Hiss, not a post-hoc gate (see CRACKLE_DUST_MAX_PROB for
@@ -1216,8 +1235,82 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 if (rng_range(&loop->rng_state, 0.0f, 1.0f) < crackle_density * CRACKLE_POP_MAX_PROB) {
                     loop->crackle_env += rng_bipolar(&loop->rng_state) * CRACKLE_POP_GAIN;
                 }
-                float crackle_l = hiss_l + loop->crackle_env * crackle_volume;
-                float crackle_r = hiss_r + loop->crackle_env * crackle_volume;
+                /* ---- the medium ------------------------------------
+                 * Everything above this point is what one pass of the tape
+                 * head does. It is written back into the buffer, so the NEXT
+                 * pass reads the damaged version and damages it again. That
+                 * recursion is the disintegration; nothing here needs to be
+                 * scripted against a timer, because the compounding is the
+                 * evolution.
+                 * ---------------------------------------------------- */
+
+                /* Gate — the quiet material goes first. */
+                float mag = fabsf(hiss_l) > fabsf(hiss_r) ? fabsf(hiss_l) : fabsf(hiss_r);
+                float ga = (mag > loop->gate_env) ? loop->gate_a : loop->gate_r_coef;
+                loop->gate_env += ga * (mag - loop->gate_env);
+                float med_l = hiss_l, med_r = hiss_r;
+                if (loop->gate_thresh > 0.0f) {
+                    float ratio = loop->gate_env / loop->gate_thresh;
+                    float g = ratio * ratio;          /* soft knee, no switching */
+                    if (g > 1.0f) g = 1.0f;
+                    med_l *= g; med_r *= g;
+                }
+
+                /* Level regulator — see MEDIUM_LEVEL_TAU_S. */
+                /* Mean SQUARE, not mean-|x|: as the take darkens its
+                 * waveform gets more sinusoidal and those two drift apart,
+                 * so holding mean-|x| steady let RMS climb ~3.4x over two
+                 * minutes — the loop got LOUDER as it decayed. The gain
+                 * itself is solved once per block in the prepass. */
+                float inst = (med_l * med_l + med_r * med_r) * 0.5f;
+                loop->medium_level += loop->medium_level_a * (inst - loop->medium_level);
+                med_l *= loop->medium_gain; med_r *= loop->medium_gain;
+
+                /* Write it back onto the tape. Frozen means the medium is
+                 * not moving past the head, so nothing is re-printed and
+                 * the take stays exactly as ruined as it was. */
+                if (loop->medium_active && !loop->frozen && !loop->erasing) {
+                    int from = loop->medium_last_idx;
+                    int span = (from < 0) ? 0
+                             : (idx0 - from + loop->recorded_length) % loop->recorded_length;
+                    if (from < 0 || span == 0 || span > OVERDUB_MAX_FILL) {
+                        medium_write(loop, idx0, med_l, med_r);
+                    } else {
+                        for (int k = 1; k <= span; k++)
+                            medium_write(loop, (from + k) % loop->recorded_length, med_l, med_r);
+                    }
+                    loop->medium_last_idx = idx0;
+                } else {
+                    loop->medium_last_idx = -1;
+                }
+
+                /* ---- output only, never written back ------------------
+                 * The wash is a reverb, and a reverb inside a feedback path
+                 * builds without bound — it belongs after the tape, not on
+                 * it. Crackle is surface noise of THIS playback, not damage
+                 * to the medium, so it does not accumulate either. */
+                float out_l = med_l, out_r = med_r;
+                if (loop->darken_wash > 0.0f) {
+                    float damp1 = loop->darken_damp1;
+                    float damp2 = 1.0f - damp1;
+                    float rev_input = (med_l + med_r) * 0.5f;
+                    float rev_l = 0.0f, rev_r = 0.0f;
+                    for (int c = 0; c < REVERB_NUM_COMBS; c++) {
+                        rev_l += reverb_comb_process(&loop->comb_l[c], rev_input, loop->darken_fb, damp1, damp2);
+                        rev_r += reverb_comb_process(&loop->comb_r[c], rev_input, loop->darken_fb, damp1, damp2);
+                    }
+                    rev_l *= 1.0f / (float)REVERB_NUM_COMBS;
+                    rev_r *= 1.0f / (float)REVERB_NUM_COMBS;
+                    for (int a = 0; a < REVERB_NUM_ALLPASS; a++) {
+                        rev_l = reverb_allpass_process(&loop->allpass_l[a], rev_l);
+                        rev_r = reverb_allpass_process(&loop->allpass_r[a], rev_r);
+                    }
+                    out_l = med_l + (rev_l - med_l) * loop->darken_wash;
+                    out_r = med_r + (rev_r - med_r) * loop->darken_wash;
+                }
+
+                float crackle_l = out_l + loop->crackle_env * crackle_volume;
+                float crackle_r = out_r + loop->crackle_env * crackle_volume;
 
                 /* 5. Level scaling — this loop's own contribution fades with
                  * memory, and independently with erase_fade_gain (1.0
@@ -1227,8 +1320,8 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * flavor's applied_* target above via the chase, and erasing
                  * is a deliberate "let go of this now" fade-to-silence, not
                  * an accelerated version of the loop's own aging. */
-                wet_l = (crackle_l * loop->memory + hiss_only_l) * loop->erase_fade_gain;
-                wet_r = (crackle_r * loop->memory + hiss_only_r) * loop->erase_fade_gain;
+                wet_l = crackle_l * loop->memory * loop->erase_fade_gain;
+                wet_r = crackle_r * loop->memory * loop->erase_fade_gain;
 
                 /* 6. Master-page volume is applied once, after summing all
                  * four loops' wet below — not here per-loop-in-isolation,
