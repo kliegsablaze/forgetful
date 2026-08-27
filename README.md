@@ -26,12 +26,22 @@ unpack it into the `audio_fx` module directory on the Move:
 
 ```bash
 scp forgetful-module.tar.gz ableton@move.local:/data/UserData/
-ssh ableton@move.local \
-  'mkdir -p /data/UserData/schwung/modules/audio_fx && \
-   tar xzf /data/UserData/forgetful-module.tar.gz \
-       -C /data/UserData/schwung/modules/audio_fx && \
-   rm /data/UserData/forgetful-module.tar.gz'
+ssh ableton@move.local 'set -e
+  D=/data/UserData/schwung/modules/audio_fx/forgetful
+  mkdir -p "$D" /data/UserData/.fg-stage
+  tar xzf /data/UserData/forgetful-module.tar.gz -C /data/UserData/.fg-stage
+  mv -f /data/UserData/.fg-stage/forgetful/forgetful.so "$D/forgetful.so"
+  mv -f /data/UserData/.fg-stage/forgetful/module.json "$D/module.json"
+  rm -rf /data/UserData/.fg-stage /data/UserData/forgetful-module.tar.gz'
 ```
+
+It unpacks to a staging directory and *moves* the files into place rather
+than extracting straight over them. That matters if you are replacing an
+install that is currently loaded in a slot: writing over a `.so` that a
+running process has mapped truncates the file under the live mapping, and
+the next page fault takes Move's audio process down with it. A `mv` within
+`/data` is an atomic rename, so the running instance keeps its old mapping
+and simply carries on with the old code until you reload the module.
 
 Then rescan modules (or restart Schwung) and Forgetful shows up in any
 Signal Chain fx slot.
