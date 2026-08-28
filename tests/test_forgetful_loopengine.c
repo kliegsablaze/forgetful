@@ -857,71 +857,57 @@ int main(void) {
 
     /* Test 13 removed with Erase (2026-08-27). */
 
-    /* ---- Test 14: `state` get/set round-trip — get_param("state") is used
-     * for ordinary slot autosave/patch reload. Confirms: (a) live knobs
-     * (decay_rate + the five flavor params, Master volumes, input_routing)
-     * survive a save/restore into a FRESH instance bit-for-bit, and (b)
-     * recorded content/state is deliberately NOT part of the blob — a
-     * Looping source loop must restore into a Ready destination loop, not
-     * some half-restored Looping-with-no-buffer state, and must not crash
-     * doing so. ---- */
+    /* ---- Test 13: state does NOT round-trip. Forgetful starts from
+     * defaults every time, so get_param("state") answers "{}" and
+     * set_param("state") is ignored — including blobs saved by earlier
+     * versions, which are still sitting in sets on the device, so
+     * suppressing the SAVE alone would not have been enough.
+     *
+     * This replaces a test asserting the opposite. The trade is deliberate
+     * but not free: <prefix>:state is also how the chain host does User
+     * Presets and patches, so neither can capture this module now. ---- */
     {
         void *src = api->create_instance(".", NULL);
         check(src != NULL, "test13: create_instance src");
-
-        float phase = 0.0f;
-        record_full_buffer_loop_a(api, src, &phase); /* gets A into Looping */
-        check(status_is_looping(status_of(api, src, 'A')), "test13: src loop A is Looping before save");
-
-        /* Flavor knobs are plain live values (no randomization since
-         * 2026-08-25) — set to known, distinctive values so the saved blob
-         * is deterministic. decay_rate=120
-         * (seconds) is deliberately outside the OLD 3..60 range, to prove
-         * the wider range round-trips too. */
-        api->set_param(src, "loopA_decay_rate", "120");
-        api->set_param(src, "loopA_wow", "0.7");
-        api->set_param(src, "loopA_hf_loss", "0.6");
-        api->set_param(src, "loopA_hiss", "0.3");
+        api->set_param(src, "input_routing", "C");
+        api->set_param(src, "loopA_decay_rate", "12");
+        api->set_param(src, "loopA_wow", "0.8");
         api->set_param(src, "loopA_send", "0.9");
-        api->set_param(src, "loopA_chaos", "0.1");
-        api->set_param(src, "loopB_volume", "0.25");
-        api->set_param(src, "input_routing", TEST_ROUTE_B);
+        api->set_param(src, "loopA_trim", "0.2");
+        api->set_param(src, "loopA_tone", "-0.7");
+        api->set_param(src, "loopA_speed", "1/4");
+        api->set_param(src, "loopA_volume", "1.4");
 
-        char state_json[1024];
-        int n = api->get_param(src, "state", state_json, sizeof(state_json));
-        check(n > 0, "test13: state readable");
+        char blob[4096];
+        int n = api->get_param(src, "state", blob, sizeof(blob));
+        check(n > 0, "test13: state is still readable — a definite answer, not "
+                     "a refusal the host would retry");
+        check(strcmp(blob, "{}") == 0,
+              "test13: and it is EMPTY, so nothing is written into a set");
 
         void *dst = api->create_instance(".", NULL);
         check(dst != NULL, "test13: create_instance dst");
-        api->set_param(dst, "state", state_json);
+        api->set_param(dst, "state",
+            "{\"input_routing\":2,\"loopA_volume\":1.4000,\"loopA_send\":0.9000,"
+            "\"loopA_decay_rate\":12.0,\"loopA_wow\":0.8000,\"loopA_trim\":0.2,"
+            "\"loopA_tone\":-0.7,\"loopA_speed\":0.2500}");
 
-        char buf[64];
-        api->get_param(dst, "loopA_decay_rate", buf, sizeof(buf));
-        check(strcmp(buf, "120.0") == 0, "test13: decay_rate restored");
-        api->get_param(dst, "loopA_wow", buf, sizeof(buf));
-        check(strcmp(buf, "0.700") == 0, "test13: wow restored");
-        api->get_param(dst, "loopA_hf_loss", buf, sizeof(buf));
-        check(strcmp(buf, "0.600") == 0, "test13: hf_loss restored");
-        api->get_param(dst, "loopA_hiss", buf, sizeof(buf));
-        check(strcmp(buf, "0.300") == 0, "test13: hiss restored");
-        api->get_param(dst, "loopA_send", buf, sizeof(buf));
-        check(strcmp(buf, "0.900") == 0, "test13: reverb send restored");
-        api->get_param(dst, "loopA_chaos", buf, sizeof(buf));
-        check(strcmp(buf, "0.100") == 0, "test13: chaos restored");
-        api->get_param(dst, "loopB_volume", buf, sizeof(buf));
-        check(strcmp(buf, "0.250") == 0, "test13: Master loop volume restored");
-        api->get_param(dst, "input_routing", buf, sizeof(buf));
-        check(strcmp(buf, "B") == 0, "test13: input_routing restored");
-
-        /* The part that must NOT be restored: dst's loop A comes back
-         * Ready, not Looping, even though src's loop A was Looping when the
-         * state was saved — recorded buffer content and playback position
-         * are deliberately outside the `state` blob. */
-        check(strcmp(status_of(api, dst, 'A'), STATUS_READY) == 0,
-              "test13: dst loop A is Ready after restore, not carried over as Looping");
-
-        api->destroy_instance(src);
+        void *fresh = api->create_instance(".", NULL);
+        check(fresh != NULL, "test13: create_instance fresh");
+        static const char *keys13[] = { "loopA_decay_rate", "loopA_wow", "loopA_send",
+                                        "loopA_trim", "loopA_tone", "loopA_speed",
+                                        "loopA_volume", "input_routing" };
+        for (size_t k = 0; k < sizeof(keys13)/sizeof(keys13[0]); k++) {
+            char a2[64], b2[64];
+            api->get_param(dst,   keys13[k], a2, sizeof(a2));
+            api->get_param(fresh, keys13[k], b2, sizeof(b2));
+            check(strcmp(a2, b2) == 0,
+                  "test13: an instance handed a blob saved by an older version "
+                  "is identical to an untouched one");
+        }
+        api->destroy_instance(fresh);
         api->destroy_instance(dst);
+        api->destroy_instance(src);
     }
 
     /* ---- Test 15: saturation-stage passthrough. sat_amount==0 must be
@@ -1545,21 +1531,9 @@ int main(void) {
             check(strcmp(v, want[k]) == 0, "test26: speed reads back what was written");
         }
 
-        /* both survive a state round-trip, or a saved set loses them */
-        api->get_param(inst, "loopB_speed", v, sizeof(v));
-        check(strcmp(v, "1x") == 0,
-              "test26: a fresh memory starts at 1x — speed_mul is set AFTER "
-              "init_loop's memset, or the read rate is zero and nothing plays");
-        api->set_param(inst, "loopC_speed", "1/4");
-        api->set_param(inst, "loopC_send", "0.75");
-        api->get_param(inst, "state", js, sizeof(js));
-        void *i2 = api->create_instance(".", NULL);
-        api->set_param(i2, "state", js);
-        api->get_param(i2, "loopC_speed", v, sizeof(v));
-        check(strcmp(v, "1/4") == 0, "test26: speed survives a state round-trip");
-        api->get_param(i2, "loopC_send", v, sizeof(v));
-        check(atof(v) > 0.7 && atof(v) < 0.8, "test26: send survives a state round-trip");
-        api->destroy_instance(i2);
+        /* No state round-trip to test here any more — see test13. The
+         * module answers "{}" and ignores what it is given, so a set can
+         * neither save nor restore these. */
         api->destroy_instance(inst);
     }
 

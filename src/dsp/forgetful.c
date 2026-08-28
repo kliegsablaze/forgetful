@@ -1904,17 +1904,8 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
     s->total_frames += (uint64_t)frames;
 }
 
-/* Simple JSON number extraction (matches freeverb's helper) */
-static int json_get_float(const char *json, const char *key, float *out) {
-    char search[64];
-    snprintf(search, sizeof(search), "\"%s\":", key);
-    const char *p = strstr(json, search);
-    if (!p) return -1;
-    p += strlen(search);
-    while (*p == ' ' || *p == '\t') p++;
-    *out = atof(p);
-    return 0;
-}
+/* json_get_float went with the state restore (2026-08-28): the blob is
+ * ignored now, and it had no other caller. */
 
 /* Memory-percentage-to-word mapping (design doc "Screen / Feedback"). Takes
  * the already-rounded display percentage (0..100), not raw float memory —
@@ -2109,50 +2100,20 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
     if (!s || !key || !val) return;
 
     if (strcmp(key, "state") == 0) {
-        float v;
-        if (json_get_float(val, "input_routing", &v) == 0) {
-            int r = (int)v;
-            if (r >= ROUTE_A && r <= ROUTE_D) s->input_routing = r;
-            /* A freshly-restored instance has nothing RECORDING yet, so
-             * there's no close-on-change side effect to run here. */
-        }
-        for (int i = 0; i < NUM_LOOPS; i++) {
-            char key_buf[32];
-            snprintf(key_buf, sizeof(key_buf), "loop%c_volume", LOOP_LETTERS[i]);
-            if (json_get_float(val, key_buf, &v) == 0) s->loop_volume[i] = clampf(v, 0.0f, MAX_LOOP_VOLUME);
-            snprintf(key_buf, sizeof(key_buf), "loop%c_send", LOOP_LETTERS[i]);
-            if (json_get_float(val, key_buf, &v) == 0) s->loop_send[i] = clampf(v, 0.0f, 1.0f);
-
-            snprintf(key_buf, sizeof(key_buf), "loop%c_decay_rate", LOOP_LETTERS[i]);
-            if (json_get_float(val, key_buf, &v) == 0) s->loops[i].decay_rate = clampf(v, MIN_DECAY_RATE, MAX_DECAY_RATE);
-            /* wow/hf_loss/hiss/chaos restore straight into `.target` — a
-             * state load is a snapshot, not a live knob turn, so it
-             * deliberately bypasses flavor_ramp_set_param's first-touch/
-             * ramp logic entirely (leaving .step/.touched at whatever this
-             * freshly-created instance already has, normally zeroed). */
-            snprintf(key_buf, sizeof(key_buf), "loop%c_wow", LOOP_LETTERS[i]);
-            if (json_get_float(val, key_buf, &v) == 0) s->loops[i].wow_ramp.target = clampf(v, 0.0f, 1.0f);
-            snprintf(key_buf, sizeof(key_buf), "loop%c_hf_loss", LOOP_LETTERS[i]);
-            if (json_get_float(val, key_buf, &v) == 0) s->loops[i].hf_loss_ramp.target = clampf(v, 0.0f, 1.0f);
-            snprintf(key_buf, sizeof(key_buf), "loop%c_hiss", LOOP_LETTERS[i]);
-            if (json_get_float(val, key_buf, &v) == 0) s->loops[i].hiss_ramp.target = clampf(v, 0.0f, 1.0f);
-            snprintf(key_buf, sizeof(key_buf), "loop%c_chaos", LOOP_LETTERS[i]);
-            if (json_get_float(val, key_buf, &v) == 0) s->loops[i].crackle_ramp.target = clampf(v, 0.0f, 1.0f);
-            snprintf(key_buf, sizeof(key_buf), "loop%c_tone", LOOP_LETTERS[i]);
-            if (json_get_float(val, key_buf, &v) == 0)
-                s->loops[i].tone = clampf(v, -1.0f, 1.0f);
-            snprintf(key_buf, sizeof(key_buf), "loop%c_speed", LOOP_LETTERS[i]);
-            if (json_get_float(val, key_buf, &v) == 0)
-            {
-                s->loops[i].speed_mul = (v <= 0.3f) ? 0.25f : (v <= 0.6f) ? 0.5f
-                                      : (v >= 1.5f) ? 2.0f : 1.0f;
-                /* a restored set starts AT its speed, it does not glide up
-                 * to it from 1x while you listen */
-                s->loops[i].speed_log_cur = s->loops[i].speed_log_target =
-                    log2f(s->loops[i].speed_mul);
-                s->loops[i].speed_eff = s->loops[i].speed_mul;
-            }
-        }
+        /* Deliberately IGNORED. Forgetful starts from defaults every time.
+         *
+         * Not emitting state would stop new saves, but sets already on the
+         * device carry a blob from before this change and the host would
+         * still hand it back — so the restore has to be refused here too,
+         * not just the save suppressed.
+         *
+         * The cost is real and worth stating: `<prefix>:state` is the same
+         * channel the chain host uses for User Presets and for patches, so
+         * neither can capture this module's settings any more. That is the
+         * intended trade — a take is a performance, and a loop that came
+         * back three days later already half eaten is not a starting
+         * point. */
+        (void)val;
         return;
     }
 
@@ -2312,30 +2273,11 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
     if (suffix) return loop_get_param(&s->loops[li], s->total_frames, suffix, buf, len);
 
     if (strcmp(key, "state") == 0) {
-        char json[1536];   /* grew with loopX_half_speed */
-        int pos = snprintf(json, sizeof(json), "{\"input_routing\":%d", s->input_routing);
-        for (int i = 0; i < NUM_LOOPS; i++) {
-            pos += snprintf(json + pos, sizeof(json) - pos,
-                             ",\"loop%c_volume\":%.4f,\"loop%c_send\":%.4f",
-                             LOOP_LETTERS[i], s->loop_volume[i],
-                             LOOP_LETTERS[i], s->loop_send[i]);
-        }
-        for (int i = 0; i < NUM_LOOPS; i++) {
-            const loop_engine_t *loop = &s->loops[i];
-            pos += snprintf(json + pos, sizeof(json) - pos,
-                ",\"loop%c_decay_rate\":%.4f,\"loop%c_wow\":%.4f,\"loop%c_hf_loss\":%.4f,"
-                "\"loop%c_hiss\":%.4f,\"loop%c_chaos\":%.4f,"
-                "\"loop%c_speed\":%.4f,\"loop%c_tone\":%.4f",
-                LOOP_LETTERS[i], loop->decay_rate, LOOP_LETTERS[i], loop->wow_ramp.target,
-                LOOP_LETTERS[i], loop->hf_loss_ramp.target, LOOP_LETTERS[i], loop->hiss_ramp.target,
-                LOOP_LETTERS[i], loop->crackle_ramp.target,
-                LOOP_LETTERS[i], (double)loop->speed_mul,
-                LOOP_LETTERS[i], (double)loop->tone);
-        }
-        pos += snprintf(json + pos, sizeof(json) - pos, "}");
-        if (pos >= (int)sizeof(json) || pos >= len) return -1;
-        strcpy(buf, json);
-        return pos;
+        /* An empty object, not a refusal. Returning -1 here would read as
+         * "the answer did not arrive" rather than "there is nothing", and
+         * the host retries that. "{}" is a definite answer that restores
+         * nothing — see the set_param side. */
+        return snprintf(buf, len, "{}");
     }
 
     if (strcmp(key, "chain_params") == 0) {
