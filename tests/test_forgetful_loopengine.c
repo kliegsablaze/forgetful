@@ -1897,13 +1897,18 @@ int main(void) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;
     }
+    /* Keep this list honest: it is the only summary of what the suite
+     * covers, and it had gone on advertising erase, saturation and the
+     * first-touch/second-touch ramp for some time after all three were
+     * deleted. */
     printf("PASS: forgetful LoopEngine bench test "
            "(chain_params shape, manual record start/stop, decay timing, "
-           "continuous decay, single-click erase fade-out, routing, "
-           "status-line word buckets, Loops Overview format, too-short blip "
-           "discard, parameter clamping, extreme "
-           "decay_rate, state round-trip, "
-           "saturation passthrough, master_freeze, flavor-knob chase glide, "
-           "overdub toggle, v2 flavor-ramp first-touch/second-touch)\n");
+           "continuous decay, routing, status-line word buckets, Loops "
+           "Overview format, too-short blip discard, parameter clamping, "
+           "extreme decay_rate, state round-trip, master_freeze, flavour "
+           "knob slew, overdub toggle, click-free overdub write, recursive "
+           "medium, Darken compounding, VINYL gate, level regulator, splice "
+           "fade, Sound page, send reverb, speed glide, Tone filter, Trim + "
+           "join crossfade, reset on take death)\n");
     return 0;
 }
