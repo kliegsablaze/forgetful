@@ -374,21 +374,22 @@ int main(void) {
         check(n > 0, "test0: ui_hierarchy readable");
         check(n > 0 && strstr(hier, "\"knobs\":[") != NULL, "test0: ui_hierarchy has a knobs array");
 
-        /* Five named levels — root (Master) plus loopA..loopD — not one flat
-         * array (see forgetful.c's ui_hierarchy comment). */
+        /* THREE levels, so three sections: root (Main), sound, and one
+         * "loops" level holding all four memories. A section is a level —
+         * pages sharing it form one bank-bar segment and one row in the
+         * section picker — so the four loops being one level is what makes
+         * them one section rather than four. Their per-page names are the
+         * planner's continuation numbering, not declared here. */
         check(strstr(hier, "\"root\":{") != NULL, "test0: ui_hierarchy has a root level");
-        static const char *level_keys[] = { "loopA", "loopB", "loopC", "loopD" };
-        static const char *level_labels[] = { "Loop A", "Loop B", "Loop C", "Loop D" };
+        check(strstr(hier, "\"sound\":{\"label\":\"Sound\"") != NULL,
+              "test0: a sound level");
+        check(strstr(hier, "\"loops\":{\"label\":\"Loops\"") != NULL,
+              "test0: one loops level carrying all four memories");
         for (size_t i = 0; i < 4; i++) {
-            /* "Loop A".."Loop D" since 2026-08-27 — the bare letter read as
-             * ambiguous next to the letters labelling per-memory COLUMNS on
-             * Main and Sound. (2026-08-25, trimmed from
-             * "Loop A" etc.) — probe the level's OWN declaration
-             * ("loopA":{"label":"A"...) rather than a bare "label":"A",
-             * which loopA_volume's identically-renamed label would also
-             * satisfy and make this check meaningless. */
-            snprintf(probe, sizeof(probe), "\"%s\":{\"label\":\"%s\"", level_keys[i], level_labels[i]);
-            check(strstr(hier, probe) != NULL, "test0: ui_hierarchy loop level has its own label");
+            snprintf(probe, sizeof(probe), "\"loop%c\":{", "ABCD"[i]);
+            check(strstr(hier, probe) == NULL,
+                  "test0: and no per-loop level, which would split them back "
+                  "into four sections");
         }
         /* Main's top row is Route/Status/Rec/Freeze; its bottom row is
          * deliberately empty since the volumes moved to the Mixer page. */
@@ -1508,17 +1509,27 @@ int main(void) {
         int n = api->get_param(inst, "ui_hierarchy", js, sizeof(js));
         check(n > 0 && strstr(js, "\"sound\"") != NULL, "test26: a sound level exists");
         const char *d = strstr(js, "{\"level\":\"sound\"");
-        const char *a = strstr(js, "{\"level\":\"loopA\"");
-        check(d && a && d < a, "test26: Sound sits between Main and the loop pages");
+        const char *a = strstr(js, "{\"level\":\"loops\"");
+        check(d && a && d < a, "test26: Sound sits between Main and Loops");
         check(strstr(js, "\"master_freeze\",\"loopA_speed\"") != NULL,
               "test26: the speeds are Main's bottom row");
         check(strstr(js, "\"loopA_volume\",\"loopB_volume\",\"loopC_volume\",\"loopD_volume\","
                          "\"loopA_tone\"") != NULL,
               "test26: Sound is the levels over the tones");
-        check(strstr(js, "\"label\":\"Loop A\"") != NULL,
-              "test26: the loop pages are named Loop A..D");
+        /* The four loops are ONE level, so they are one SECTION: one
+         * bank-bar segment, one row in the section picker, and Shift+jog
+         * steps sections rather than pages. The planner paginates the
+         * level's 32 knobs into four pages inside it. */
+        check(strstr(js, "\"loops\":{\"label\":\"Loops\"") != NULL,
+              "test26: the four loops share one level, so one section");
+        check(strstr(js, "\"level\":\"loopA\"") == NULL,
+              "test26: and are no longer four separate sections");
         check(strstr(js, "\"loopA_decay_rate\",\"loopA_trim\",\"loopA_send\",\"loopA_state\"") != NULL,
-              "test26: the loop page's top row is Age, Trim, Space, ECHO");
+              "test26: a loop page's top row is Age, Trim, Space, state");
+        /* 32 knobs must land 8 per page with one loop each, or a page
+         * straddles two memories and every label lies. */
+        check(strstr(js, "\"loopA_hiss\",\"loopB_decay_rate\"") != NULL,
+              "test26: the pagination falls exactly on the loop boundary");
         check(strstr(js, "loopA_saturation") == NULL,
               "test26: Drive is gone from the hierarchy");
 
