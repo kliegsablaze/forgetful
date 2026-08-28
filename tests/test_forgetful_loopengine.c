@@ -156,24 +156,11 @@ static const char *status_of(audio_fx_api_v2_t *api, void *inst, char letter) {
     return buf;
 }
 
-/* loopX_status is a full state line, not a bare state name — Idle reads
- * "Ready" (changed from "Listening..." with the manual-record redesign,
- * since the loop is no longer passively monitoring input level) and Looping
- * reads "Looping - NN% (word)" with a live percentage, so the LOOPING checks
- * below match the fixed prefix rather than the whole string. */
+
 static int status_is_looping(const char *status) {
     return strncmp(status, "Looping - ", 10) == 0;
 }
 #define STATUS_READY "Ready"
-
-static const char *erase_readout(audio_fx_api_v2_t *api, void *inst, char letter) {
-    static char key[32];
-    static char buf[64];
-    snprintf(key, sizeof(key), "loop%c_erase", letter);
-    int n = api->get_param(inst, key, buf, sizeof(buf));
-    if (n <= 0) buf[0] = '\0';
-    return buf;
-}
 
 static const char *record_readout(audio_fx_api_v2_t *api, void *inst) {
     static char buf[16];
@@ -811,7 +798,9 @@ int main(void) {
 
         api->set_param(inst, "loopA_volume", "5");
         api->get_param(inst, "loopA_volume", buf, sizeof(buf));
-        check(strcmp(buf, "1.000") == 0, "test10: loop volume clamps to max 1");
+        check(strcmp(buf, "1.500") == 0,
+              "test10: loop volume clamps to MAX_LOOP_VOLUME (1.5 = 150%, raised\n"
+              "              2026-08-27 so a memory can be pushed, not only pulled back)");
         api->set_param(inst, "loopA_volume", "-5");
         api->get_param(inst, "loopA_volume", buf, sizeof(buf));
         check(strcmp(buf, "0.000") == 0, "test10: loop volume clamps to min 0");
@@ -1524,8 +1513,8 @@ int main(void) {
               "test26: Sound is the levels over the tones");
         check(strstr(js, "\"label\":\"Loop A\"") != NULL,
               "test26: the loop pages are named Loop A..D");
-        check(strstr(js, "\"loopA_decay_rate\",\"loopA_send\"") != NULL,
-              "test26: the reverb send took Drive's slot on the memory page");
+        check(strstr(js, "\"loopA_decay_rate\",\"loopA_trim\",\"loopA_send\",\"loopA_state\"") != NULL,
+              "test26: the loop page's top row is Age, Trim, Space, ECHO");
         check(strstr(js, "loopA_saturation") == NULL,
               "test26: Drive is gone from the hierarchy");
 
@@ -1738,6 +1727,11 @@ int main(void) {
         api->set_param(inst, "loopA_hf_loss", "0.6");
         api->set_param(inst, "loopA_chaos", "0.8");
         api->set_param(inst, "loopA_hiss", "0.5");
+        api->set_param(inst, "loopA_trim", "20");
+        api->set_param(inst, "loopA_tone", "-70");
+        api->set_param(inst, "loopA_send", "0.9");
+        api->set_param(inst, "loopA_speed", "1/4");
+        api->set_param(inst, "loopA_volume", "1.4");
         run_silence(api, inst, BLOCK_FRAMES * 20);
 
         char v[32];
@@ -1754,12 +1748,20 @@ int main(void) {
                   "test30: every flavour knob is back at zero once the take "
                   "has gone silent");
         }
-        /* Age, and the controls that are NOT damage, are untouched. */
+        /* Everything the take owned goes back to its default with it. */
         api->get_param(inst, "loopA_decay_rate", v, sizeof(v));
-        check(atof(v) > 5.0 && atof(v) < 7.0,
-              "test30: Age is not a flavour and survives");
+        check(atof(v) > 299.0, "test30: Age returns to its maximum");
+        api->get_param(inst, "loopA_trim", v, sizeof(v));
+        check(atof(v) == 50.0, "test30: Trim returns to centre");
+        api->get_param(inst, "loopA_tone", v, sizeof(v));
+        check(atof(v) == 0.0, "test30: Tone returns to centre");
+        api->get_param(inst, "loopA_send", v, sizeof(v));
+        check(atof(v) == 0.0, "test30: Space returns to zero");
         api->get_param(inst, "loopA_speed", v, sizeof(v));
-        check(strcmp(v, "1x") == 0, "test30: speed survives too");
+        check(strcmp(v, "1x") == 0, "test30: speed returns to 1x");
+        api->get_param(inst, "loopA_volume", v, sizeof(v));
+        check(atof(v) > 0.79 && atof(v) < 0.81,
+              "test30: level returns to its 80% default");
         api->destroy_instance(inst);
     }
 
@@ -1774,7 +1776,10 @@ int main(void) {
         const int TAKE = 200;
         /* pass 0: marker at the head, measures END trims (right of centre)
            pass 1: marker at 75%, measures START trims (left of centre)   */
-        const int marker[2] = { 0, 150 };
+        /* Block 5, not 0: close_recording fades the take's first 4ms to
+         * silence for the splice, which erased a marker placed at the very
+         * head — this test had never actually run, so that went unseen. */
+        const int marker[2] = { 5, 150 };
         const char *trims[2][3] = { { "50", "75", "95" }, { "50", "35", "20" } };
         for (int pass = 0; pass < 2; pass++) {
             double prev = 0.0;
@@ -1831,6 +1836,60 @@ int main(void) {
                 prev = per;
                 api->destroy_instance(inst);
             }
+        }
+    }
+
+    /* ---------------------------------------------------------------
+     * test32: a trimmed loop wraps without a click.
+     *
+     * close_recording fades the take's two ENDS to silence, so an
+     * untrimmed loop joins silence to silence. A trimmed loop joins
+     * somewhere in the middle of the take, where nothing was faded, and
+     * measured an ~8900-count step against a signal whose own slope is
+     * 282 — a click every pass. The join is crossfaded now.
+     * --------------------------------------------------------------- */
+    {
+        const char *trims[] = { "50", "60", "75", "90", "40", "25", "10" };
+        for (size_t k = 0; k < sizeof(trims) / sizeof(trims[0]); k++) {
+            void *inst = api->create_instance(".", NULL);
+            check(inst != NULL, "test32: create_instance");
+            api->set_param(inst, "input_routing", "A");
+            api->set_param(inst, "loopA_decay_rate", "600");
+            api->set_param(inst, "loopA_volume", "1");
+            press_record(api, inst);
+            int16_t tb[BLOCK_FRAMES * 2];
+            float phase = 0.0f;
+            for (int b = 0; b < 200; b++) {
+                fill_tone(tb, BLOCK_FRAMES, 0.28f, 220.0f, &phase);
+                api->process_block(inst, tb, BLOCK_FRAMES);
+            }
+            api->set_param(inst, "master_record", "STOP!");
+            api->set_param(inst, "loopA_hiss", "0");
+            api->set_param(inst, "loopA_chaos", "0");
+            api->set_param(inst, "loopA_wow", "0");
+            api->set_param(inst, "loopA_hf_loss", "0");
+            api->set_param(inst, "loopA_send", "0");
+            api->set_param(inst, "loopA_trim", trims[k]);
+
+            int worst = 0, prev = 0, have = 0;
+            for (int b = 0; b < 600; b++) {
+                fill_silence(tb, BLOCK_FRAMES);
+                api->process_block(inst, tb, BLOCK_FRAMES);
+                if (b < 160) continue;         /* let it settle into the trim */
+                for (int i = 0; i < BLOCK_FRAMES * 2; i += 2) {
+                    if (have) {
+                        int d = (int)tb[i] - prev;
+                        if (d < 0) d = -d;
+                        if (d > worst) worst = d;
+                    }
+                    prev = (int)tb[i]; have = 1;
+                }
+            }
+            check(worst < 900,
+                  "test32: a trimmed loop wraps without a click — the join is "
+                  "crossfaded, so the worst step stays near the tone's own "
+                  "slope instead of jumping to ~8900");
+            api->destroy_instance(inst);
         }
     }
 

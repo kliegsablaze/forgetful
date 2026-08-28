@@ -367,7 +367,22 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * matches Tone and Speed, which are centred the same way.
  * --------------------------------------------------------------------- */
 #define TRIM_MAX_FRACTION     0.90f   /* most of the take either end can take */
+/* The join has to be crossfaded, not faded to silence. close_recording
+ * fades the take's two ENDS down so an untrimmed loop wraps silence into
+ * silence, but a trimmed loop wraps somewhere in the middle of the take
+ * where nothing was faded — measured as an ~8900-count step against a
+ * signal whose own slope was 282, i.e. a click every pass.
+ *
+ * Fading the new join to silence instead would work, but on a loop
+ * trimmed to 60ms a 5ms dip each time round is audible as a tremolo. So
+ * the last TRIM_XFADE_SECONDS before the join is mixed with the first
+ * TRIM_XFADE_SECONDS after it, and the head resumes past that. Nothing is
+ * silent, and the two sides meet at equal level. */
+#define TRIM_XFADE_SECONDS    0.006f
 #define TRIM_DEFAULT_PCT      50.0f
+/* Headroom above unity, so a memory can be pushed rather than only pulled
+ * back. The module's output limiter is what keeps that safe. */
+#define MAX_LOOP_VOLUME       1.5f
 
 /* ---- Tone: one knob, both filters ------------------------------------
  * The Dirtywave M8's DJ filter. Centre is a true bypass; left sweeps a
@@ -424,6 +439,8 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
 #define REVERB_FEEDBACK_MAX  0.98f
 
 #define DEFAULT_LOOP_VOLUME  0.8f
+#define MIN_DECAY_RATE       3.0f
+#define MAX_DECAY_RATE     300.0f
 
 typedef enum {
     LOOP_IDLE = 0,
@@ -1066,6 +1083,19 @@ static void reset_take(loop_engine_t *loop) {
  * same convention as mix_dry_wet. Split out because the overdub write has
  * to be able to fill a span of frames, not just the one under the read
  * head; see the overdub-write block. */
+/* One interpolated stereo sample from the take at a fractional position. */
+static inline void take_read(const loop_engine_t *loop, double pos,
+                             float *out_l, float *out_r) {
+    int i0 = (int)floor(pos);
+    if (i0 >= loop->recorded_length) i0 %= loop->recorded_length;
+    if (i0 < 0) i0 = 0;
+    int i1 = i0 + 1;
+    if (i1 >= loop->recorded_length) i1 = 0;
+    float fr = (float)(pos - floor(pos));
+    *out_l = (loop->buffer[i0].l * (1.0f - fr) + loop->buffer[i1].l * fr) / 32768.0f;
+    *out_r = (loop->buffer[i0].r * (1.0f - fr) + loop->buffer[i1].r * fr) / 32768.0f;
+}
+
 static inline void overdub_add(loop_engine_t *loop, int idx, int16_t l, int16_t r) {
     int32_t nl = (int32_t)loop->buffer[idx].l + (int32_t)l;
     int32_t nr = (int32_t)loop->buffer[idx].r + (int32_t)r;
@@ -1501,6 +1531,21 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 float raw_l = (loop->buffer[idx0].l * (1.0f - frac) + loop->buffer[idx1].l * frac) / 32768.0f;
                 float raw_r = (loop->buffer[idx0].r * (1.0f - frac) + loop->buffer[idx1].r * frac) / 32768.0f;
 
+                /* Crossfade the join — see TRIM_XFADE_SECONDS. */
+                {
+                    double span = loop->trim_hi - loop->trim_lo;
+                    double xf = TRIM_XFADE_SECONDS * SAMPLE_RATE;
+                    if (xf > span * 0.25) xf = span * 0.25;
+                    double dist = loop->trim_hi - loop->read_head;
+                    if (xf >= 1.0 && dist < xf) {
+                        float al, ar;
+                        take_read(loop, loop->trim_lo + (xf - dist), &al, &ar);
+                        float g = (float)(dist / xf);
+                        raw_l = raw_l * g + al * (1.0f - g);
+                        raw_r = raw_r * g + ar * (1.0f - g);
+                    }
+                }
+
                 /* 1. Darken — a wash of reverb that gets more present,
                  * darker, AND longer as the knob rises, replacing the old
                  * one-pole LP filter (reported 2026-08-25 as "almost can't
@@ -1690,8 +1735,15 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 loop->read_head += speed;
                 if (loop->read_head >= loop->trim_hi) {
                     double span = loop->trim_hi - loop->trim_lo;
-                    loop->read_head -= span;
+                    double xf = TRIM_XFADE_SECONDS * SAMPLE_RATE;
+                    if (xf > span * 0.25) xf = span * 0.25;
+                    if (xf < 0.0) xf = 0.0;
+                    /* resume past the head material the crossfade has
+                     * already played, or it is heard twice */
+                    loop->read_head = loop->trim_lo + xf +
+                                      (loop->read_head - loop->trim_hi);
                     if (loop->read_head < loop->trim_lo) loop->read_head = loop->trim_lo;
+                    if (loop->read_head >= loop->trim_hi) loop->read_head = loop->trim_lo;
                 }
 
                 /* Continuous, wall-clock decay: memory drains at a constant
@@ -1765,8 +1817,18 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                         loop->hiss_ramp = loop->crackle_ramp = (flavor_ramp_t){0};
                     loop->applied_wow = loop->applied_hf_loss =
                         loop->applied_hiss = loop->applied_crackle = 0.0f;
-                    /* the trim belonged to the take that just went */
-                    loop->trim_pct = TRIM_DEFAULT_PCT;
+                    /* Everything that belonged to the take goes with it, so
+                     * the next one starts from a known place rather than
+                     * inheriting the settings that took the last one apart. */
+                    loop->trim_pct   = TRIM_DEFAULT_PCT;
+                    loop->tone       = 0.0f;
+                    loop->decay_rate = MAX_DECAY_RATE;      /* Age back to 100% */
+                    loop->speed_mul  = 1.0f;
+                    loop->speed_log_cur = loop->speed_log_target = 0.0f;
+                    loop->speed_log_step = 0.0f;
+                    loop->speed_eff  = 1.0f;
+                    s->loop_volume[li] = DEFAULT_LOOP_VOLUME;
+                    s->loop_send[li]   = 0.0f;
                 }
 
 
@@ -1964,7 +2026,7 @@ static const char *loop_key_suffix(const char *key, int *loop_index_out) {
 
 static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *val) {
     if (strcmp(suffix, "decay_rate") == 0) {
-        loop->decay_rate = clampf((float)atof(val), 3.0f, 300.0f);
+        loop->decay_rate = clampf((float)atof(val), MIN_DECAY_RATE, MAX_DECAY_RATE);
     } else if (strcmp(suffix, "wow") == 0) {
         flavor_ramp_set_param(&loop->wow_ramp, &loop->applied_wow, (float)atof(val), loop->memory, loop->decay_rate, loop->frozen);
     } else if (strcmp(suffix, "hf_loss") == 0) {
@@ -2009,15 +2071,12 @@ static int loop_get_param(const loop_engine_t *loop, uint64_t total_frames, cons
     if (strcmp(suffix, "hiss") == 0)        return snprintf(buf, len, "%.3f", loop->hiss_ramp.target);
     if (strcmp(suffix, "chaos") == 0)       return snprintf(buf, len, "%.3f", loop->crackle_ramp.target);
     if (strcmp(suffix, "trim") == 0) {
-        /* Names the end it is moving, and where that end now sits — the
-         * knob addresses one at a time, so saying which is the whole
-         * readout. */
-        float t = (loop->trim_pct - 50.0f) / 50.0f;
-        if (t < -0.005f)
-            return snprintf(buf, len, "START %d", (int)lroundf(-t * TRIM_MAX_FRACTION * 100.0f));
-        if (t > 0.005f)
-            return snprintf(buf, len, "END %d", (int)lroundf((1.0f - t * TRIM_MAX_FRACTION) * 100.0f));
-        return snprintf(buf, len, "FULL");
+        /* The NUMBER, not "START 54"/"END 46"/"FULL". A float knob takes
+         * its dial position from this value, so returning text left the
+         * pointer parked at zero while the knob was actually centred —
+         * reported from the device. The direction is legible from the
+         * dial's own position either side of centre. */
+        return snprintf(buf, len, "%.0f", (double)loop->trim_pct);
     }
     if (strcmp(suffix, "tone") == 0)
         return snprintf(buf, len, "%.0f", (double)(loop->tone * 100.0f));
@@ -2060,12 +2119,12 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
         for (int i = 0; i < NUM_LOOPS; i++) {
             char key_buf[32];
             snprintf(key_buf, sizeof(key_buf), "loop%c_volume", LOOP_LETTERS[i]);
-            if (json_get_float(val, key_buf, &v) == 0) s->loop_volume[i] = clampf(v, 0.0f, 1.0f);
+            if (json_get_float(val, key_buf, &v) == 0) s->loop_volume[i] = clampf(v, 0.0f, MAX_LOOP_VOLUME);
             snprintf(key_buf, sizeof(key_buf), "loop%c_send", LOOP_LETTERS[i]);
             if (json_get_float(val, key_buf, &v) == 0) s->loop_send[i] = clampf(v, 0.0f, 1.0f);
 
             snprintf(key_buf, sizeof(key_buf), "loop%c_decay_rate", LOOP_LETTERS[i]);
-            if (json_get_float(val, key_buf, &v) == 0) s->loops[i].decay_rate = clampf(v, 3.0f, 300.0f);
+            if (json_get_float(val, key_buf, &v) == 0) s->loops[i].decay_rate = clampf(v, MIN_DECAY_RATE, MAX_DECAY_RATE);
             /* wow/hf_loss/hiss/chaos restore straight into `.target` — a
              * state load is a snapshot, not a live knob turn, so it
              * deliberately bypasses flavor_ramp_set_param's first-touch/
@@ -2177,10 +2236,10 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
         }
         return;
     }
-    if (strcmp(key, "loopA_volume") == 0) { s->loop_volume[0] = clampf((float)atof(val), 0.0f, 1.0f); return; }
-    if (strcmp(key, "loopB_volume") == 0) { s->loop_volume[1] = clampf((float)atof(val), 0.0f, 1.0f); return; }
-    if (strcmp(key, "loopC_volume") == 0) { s->loop_volume[2] = clampf((float)atof(val), 0.0f, 1.0f); return; }
-    if (strcmp(key, "loopD_volume") == 0) { s->loop_volume[3] = clampf((float)atof(val), 0.0f, 1.0f); return; }
+    if (strcmp(key, "loopA_volume") == 0) { s->loop_volume[0] = clampf((float)atof(val), 0.0f, MAX_LOOP_VOLUME); return; }
+    if (strcmp(key, "loopB_volume") == 0) { s->loop_volume[1] = clampf((float)atof(val), 0.0f, MAX_LOOP_VOLUME); return; }
+    if (strcmp(key, "loopC_volume") == 0) { s->loop_volume[2] = clampf((float)atof(val), 0.0f, MAX_LOOP_VOLUME); return; }
+    if (strcmp(key, "loopD_volume") == 0) { s->loop_volume[3] = clampf((float)atof(val), 0.0f, MAX_LOOP_VOLUME); return; }
     if (strcmp(key, "loopA_send") == 0) { s->loop_send[0] = clampf((float)atof(val), 0.0f, 1.0f); return; }
     if (strcmp(key, "loopB_send") == 0) { s->loop_send[1] = clampf((float)atof(val), 0.0f, 1.0f); return; }
     if (strcmp(key, "loopC_send") == 0) { s->loop_send[2] = clampf((float)atof(val), 0.0f, 1.0f); return; }
@@ -2288,7 +2347,7 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
         for (int i = 0; i < NUM_LOOPS; i++) {
             pos += snprintf(json + pos, sizeof(json) - pos,
                 ",{\"key\":\"loop%c_volume\",\"name\":\"%c\",\"type\":\"float\","
-                  "\"min\":0,\"max\":1,\"default\":%.2f,\"step\":0.01,\"unit\":\"%%\","
+                  "\"min\":0,\"max\":1.5,\"default\":%.2f,\"step\":0.01,\"unit\":\"%%\","
                   "\"display_format\":\"%%.0f\"}"
                 ",{\"key\":\"loop%c_speed\",\"name\":\"%c\",\"type\":\"enum\","
                   "\"options\":[\"1/4\",\"1/2\",\"1x\",\"2x\"],\"default\":\"1x\"}"
