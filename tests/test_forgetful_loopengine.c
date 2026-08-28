@@ -19,7 +19,7 @@
  * depends on how long the recording is.
  *
  * Covers:
- *   0. chain_params / ui_hierarchy shape — exactly 48 entries (8 master +
+ *   0. chain_params / ui_hierarchy shape — exactly 56 entries (8 master +
  *      4x8 loop), every expected key present in both, including
  *      master_record/master_freeze, and no OFF option in Route's options
  *      list.
@@ -331,6 +331,53 @@ static void record_full_buffer_loop_a(audio_fx_api_v2_t *api, void *inst, float 
     run_tone(api, inst, TEST_BUFFER_CAPACITY_FRAMES, 0.5f, 440.0f, phase);
 }
 
+
+/* ---- Glitch helpers (test34) ---------------------------------------
+ * Captures the module's own output while feeding silence, so what lands
+ * in `out` is the loop playing back through whatever the Glitch page is
+ * set to. The glitch RNG is seeded per instance, so two runs configured
+ * identically are byte-identical and can be compared exactly. */
+#define GTEST_BLOCKS 300
+static int16_t g_capture_a[GTEST_BLOCKS * BLOCK_FRAMES * 2];
+static int16_t g_capture_b[GTEST_BLOCKS * BLOCK_FRAMES * 2];
+
+static void capture_out(audio_fx_api_v2_t *api, void *inst, int16_t *out) {
+    for (int b = 0; b < GTEST_BLOCKS; b++) {
+        int16_t *p = out + (size_t)b * BLOCK_FRAMES * 2;
+        fill_silence(p, BLOCK_FRAMES);
+        api->process_block(inst, p, BLOCK_FRAMES);
+    }
+}
+
+/* Records a full loop, applies `settings`, then captures. */
+static void glitch_run(audio_fx_api_v2_t *api, int16_t *out,
+                       const char *const *settings, int n_settings) {
+    void *inst = api->create_instance(".", NULL);
+    float phase = 0.0f;
+    record_full_buffer_loop_a(api, inst, &phase);
+    for (int i = 0; i < n_settings; i += 2)
+        api->set_param(inst, settings[i], settings[i + 1]);
+    capture_out(api, inst, out);
+    api->destroy_instance(inst);
+}
+
+static long buf_diff(const int16_t *a, const int16_t *b) {
+    long d = 0;
+    for (size_t i = 0; i < GTEST_BLOCKS * BLOCK_FRAMES * 2; i++)
+        if (a[i] != b[i]) d++;
+    return d;
+}
+
+static int max_step(const int16_t *a) {
+    int m = 0;
+    for (size_t i = 2; i < GTEST_BLOCKS * BLOCK_FRAMES * 2; i += 2) {
+        int d = a[i] - a[i - 2];
+        if (d < 0) d = -d;
+        if (d > m) m = d;
+    }
+    return m;
+}
+
 /* Constant-value counterpart, for test14: fills the whole buffer with one
  * unchanging sample value, so the recorded content is known exactly
  * (`value`, every index). */
@@ -367,8 +414,18 @@ int main(void) {
         int key_count = 0;
         const char *p = cp;
         while ((p = strstr(p, "\"key\":\"")) != NULL) { key_count++; p += 7; }
-        check(key_count == 48,
-              "test0: chain_params has exactly 48 entries (8 master + 4x10 loop; Erase went and Trim arrived 2026-08-27)");
+        check(key_count == 56,
+              "test0: chain_params has exactly 56 entries (8 master + 4x10 loop "
+              "+ 8 glitch; Erase went and Trim arrived 2026-08-27, Glitch 2026-08-28)");
+
+        /* Both JSON contracts are built into fixed stack buffers and
+         * truncated silently by snprintf, so a page added without growing
+         * one loses its tail and the module simply stops having that page.
+         * Assert real headroom rather than "it parsed". */
+        check(n < 7000,
+              "test0: chain_params fits its buffer with real headroom — it is\n"
+              "built into a fixed 8192 stack buffer and snprintf truncates\n"
+              "SILENTLY, so this must fail while there is still room to fix it");
 
         n = api->get_param(inst, "ui_hierarchy", hier, sizeof(hier));
         check(n > 0, "test0: ui_hierarchy readable");
@@ -1927,6 +1984,120 @@ int main(void) {
      * covers, and it had gone on advertising erase, saturation and the
      * first-touch/second-touch ramp for some time after all three were
      * deleted. */
+
+    /* ---- Test 34: the Glitch page. An end-of-chain step sequencer of
+     * destructive effects, sitting after the send reverb and before the
+     * output limiter.
+     *
+     * The two claims that make the page safe to leave loaded are pinned
+     * FIRST, because both are one-line regressions: Mix at 0 is bypass,
+     * and Odds at 0 is bypass whatever Mix says. Only then is it worth
+     * asserting that turning both up does something. ---- */
+    {
+        static const char *dry[]     = { "glitch_mix", "0" };
+        static const char *odds0[]   = { "glitch_mix", "1", "glitch_odds", "0" };
+        static const char *stut[]    = { "glitch_mix", "1", "glitch_odds", "1",
+                                         "glitch_kind", "Stutter",
+                                         "glitch_step", "125" };
+        glitch_run(api, g_capture_a, dry, 2);
+
+        glitch_run(api, g_capture_b, odds0, 4);
+        check(buf_diff(g_capture_a, g_capture_b) == 0,
+              "test34: Odds at 0 is bypass even at full Mix — nothing is ever "
+              "rolled active, so the page is silent-running");
+
+        static const char *mix0[] = { "glitch_mix", "0", "glitch_odds", "1",
+                                      "glitch_kind", "Crush" };
+        glitch_run(api, g_capture_b, mix0, 6);
+        check(buf_diff(g_capture_a, g_capture_b) == 0,
+              "test34: Mix at 0 is bypass even at full Odds");
+
+        glitch_run(api, g_capture_b, stut, 8);
+        long diff = buf_diff(g_capture_a, g_capture_b);
+        check(diff > GTEST_BLOCKS * BLOCK_FRAMES / 4,
+              "test34: Mix and Odds up actually changes the signal, and on a "
+              "large fraction of samples rather than a stray few");
+
+        /* Clicks. Every splice in here is faded (grain wrap, step edge,
+         * gate edge) and this module has already shipped two click bugs,
+         * so the sample-to-sample step is bounded rather than eyeballed.
+         * A hard cut on a 0.5-amplitude tone would show ~32k. */
+        int dry_step = max_step(g_capture_a);
+        int wet_step = max_step(g_capture_b);
+        check(wet_step < 6000,
+              "test34: Stutter introduces no click — bounded sample-to-sample step");
+        check(wet_step >= dry_step,
+              "test34: (and the bound is not vacuous — it is above the dry one)");
+
+        /* Every Kind is reachable and audibly distinct, including through
+         * Tumble, which rolls one per step. A Kind that silently fell
+         * through to passthrough would look exactly like a working one
+         * from the contract side. */
+        static const char *kinds[] = { "Tumble", "Stutter", "Rewind",
+                                       "Tape", "Gate", "Crush" };
+        for (int k = 0; k < 6; k++) {
+            const char *cfg[] = { "glitch_mix", "1", "glitch_odds", "1",
+                                  "glitch_kind", kinds[k], "glitch_step", "125" };
+            glitch_run(api, g_capture_b, cfg, 8);
+            check(buf_diff(g_capture_a, g_capture_b) > GTEST_BLOCKS * BLOCK_FRAMES / 8,
+                  "test34: this Kind reaches the audio");
+            /* Crush is bounded LOOSER on purpose. Sample-and-hold is a
+             * step function — the discontinuity is the effect itself, and
+             * a bound tight enough for the others would only pass if the
+             * crusher had quietly stopped crushing. Still bounded, because
+             * a full-scale step is a different thing from a coarse one. */
+            int cap = (strcmp(kinds[k], "Crush") == 0) ? 26000 : 20000;
+            check(max_step(g_capture_b) < cap,
+                  "test34: ...and does it without a full-scale discontinuity");
+
+            char rb[64];
+            void *pi = api->create_instance(".", NULL);
+            api->set_param(pi, "glitch_kind", kinds[k]);
+            api->get_param(pi, "glitch_kind", rb, sizeof(rb));
+            check(strcmp(rb, kinds[k]) == 0,
+                  "test34: Kind round-trips as a LABEL — the host learns an "
+                  "enum's wire format from get_param, and input_routing "
+                  "records what a bare atoi() cost");
+            api->destroy_instance(pi);
+        }
+
+        /* Reach is the granular half: at 0 the grain is the audio that just
+         * went past, turned up it is grabbed from anywhere in the last two
+         * seconds. Same seed, same steps — only where they read from moves. */
+        static const char *near_[] = { "glitch_mix", "1", "glitch_odds", "1",
+                                       "glitch_kind", "Stutter", "glitch_reach", "0" };
+        static const char *far_[]  = { "glitch_mix", "1", "glitch_odds", "1",
+                                       "glitch_kind", "Stutter", "glitch_reach", "1" };
+        glitch_run(api, g_capture_a, near_, 8);
+        glitch_run(api, g_capture_b, far_, 8);
+        check(buf_diff(g_capture_a, g_capture_b) > 0,
+              "test34: Reach moves where grains are grabbed from");
+
+        /* Ranges clamp rather than wrap into a divide-by-nothing. */
+        {
+            void *pi = api->create_instance(".", NULL);
+            char rb[64];
+            api->set_param(pi, "glitch_step", "0");
+            api->get_param(pi, "glitch_step", rb, sizeof(rb));
+            check(atof(rb) >= 20.0, "test34: Step clamps at its floor");
+            api->set_param(pi, "glitch_step", "99999");
+            api->get_param(pi, "glitch_step", rb, sizeof(rb));
+            check(atof(rb) <= 1000.0, "test34: Step clamps at its ceiling");
+            api->set_param(pi, "glitch_pitch", "-99");
+            api->get_param(pi, "glitch_pitch", rb, sizeof(rb));
+            check(atof(rb) >= -12.0, "test34: Pitch clamps");
+            api->destroy_instance(pi);
+        }
+    }
+
+    /* The PASS line used to print unconditionally and the runner grepped
+     * for it, so a suite with real failures still read as green — the same
+     * class of blind pass signal as the earlier `grep -c "^FAIL"` that
+     * counted compile errors as success. Report and EXIT NONZERO. */
+    if (g_failures) {
+        fprintf(stderr, "SUITE FAILED: %d assertion(s)\n", g_failures);
+        return 1;
+    }
     printf("PASS: forgetful LoopEngine bench test "
            "(chain_params shape, manual record start/stop, decay timing, "
            "continuous decay, routing, status-line word buckets, Loops "
@@ -1935,6 +2106,6 @@ int main(void) {
            "knob slew, overdub toggle, click-free overdub write, recursive "
            "medium, Darken compounding, VINYL gate, level regulator, splice "
            "fade, Sound page, send reverb, speed glide, Tone filter, Trim + "
-           "join crossfade, reset on take death)\n");
+           "join crossfade, reset on take death, Glitch page)\n");
     return 0;
 }

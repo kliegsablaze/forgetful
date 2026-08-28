@@ -963,6 +963,84 @@ static inline void reverb_process(reverb_t *rv, float in, float fb,
     *out_l = l; *out_r = r;
 }
 
+/* ================= Glitch — the end-of-chain stumble =================
+ *
+ * A step sequencer of destructive effects in the dblue Glitch tradition,
+ * placed AFTER the send reverb and BEFORE the output limiter, so it acts
+ * on the whole remembered signal — four memories plus their space — as one
+ * thing, and anything it does to the level still gets caught.
+ *
+ * Three properties are deliberate and worth defending:
+ *
+ * 1. The capture ring is written with the PRE-glitch signal. That is what
+ *    keeps this from being a feedback path: everything else in this module
+ *    compounds on purpose, and a granular stage that also fed itself would
+ *    be a second recursion nobody asked for, fighting the first.
+ *
+ * 2. `mix` is a crossfade toward the untouched signal, and `chance` is a
+ *    probability, so a page at full Mix with Odds at 0 is SILENT-running —
+ *    identical to bypass. Both knobs have to be up before anything
+ *    happens, which is what makes the page safe to leave loaded.
+ *
+ * 3. Every edge is faded. A grain repeat, a step boundary and a gate edge
+ *    are all splices, and this module has already paid twice for splices
+ *    that were not faded (take ends, trim joins). GLITCH_FADE_FRAMES is
+ *    ~1.5ms — short enough to still read as an abrupt cut.
+ *
+ * The dry passthrough (raw_dry) is NOT glitched. The dry term is the live
+ * input walking through the module; chopping it would chop the performance
+ * being played into the loops, not the memory of it. */
+
+#define GLITCH_BUF_SECONDS     2.0f
+#define GLITCH_BUF_FRAMES      ((int)(GLITCH_BUF_SECONDS * SAMPLE_RATE))
+#define GLITCH_FADE_FRAMES     66            /* ~1.5 ms */
+#define GLITCH_MIN_STEP_FRAMES 441           /* 10 ms */
+#define GLITCH_MIN_SLICE       88            /* ~2 ms */
+#define GLITCH_STEP_MS_MIN     20.0f
+#define GLITCH_STEP_MS_MAX     1000.0f
+#define GLITCH_STEP_MS_DEFAULT 125.0f
+#define GLITCH_PITCH_RANGE     12.0f         /* semitones either way */
+#define GLITCH_DEFAULT_ODDS    0.5f
+#define GLITCH_DEFAULT_SIZE    0.5f
+#define GLITCH_DEFAULT_WIDTH   0.3f
+
+/* Effect pool. Order is the Kind enum's order minus Tumble, and
+ * GE_COUNT is what Tumble rolls against — add one and Tumble picks it
+ * up for free. */
+enum { GE_STUTTER = 0, GE_REVERSE, GE_TAPE, GE_GATE, GE_CRUSH, GE_COUNT };
+
+/* Kind knob: index 0 is Tumble (re-roll every step), 1..GE_COUNT pin one. */
+static const char *GLITCH_KIND_LABELS[] = {
+    "Tumble", "Stutter", "Rewind", "Tape", "Gate", "Crush"
+};
+#define GLITCH_KIND_COUNT ((int)(sizeof(GLITCH_KIND_LABELS)/sizeof(GLITCH_KIND_LABELS[0])))
+
+typedef struct {
+    /* knobs */
+    float mix, odds, size, reach, width;
+    float step_ms;
+    float pitch;        /* semitones */
+    int   kind;         /* 0 = Tumble, else effect + 1 */
+
+    /* capture ring */
+    float *buf_l, *buf_r;
+    int    w;
+
+    /* the step in progress */
+    int    step_len, step_left, step_pos;
+    int    active, effect;
+    double read;        /* offset WITHIN the slice, not a ring index */
+    double rate, rate_mul;
+    int    slice_start, slice_len;
+    int    gate_period, gate_pos;
+    int    crush_hold, crush_pos;
+    float  crush_l, crush_r;
+    float  pan_l, pan_r;
+
+    uint32_t rng;
+} glitch_t;
+
+
 typedef struct {
     loop_engine_t loops[NUM_LOOPS];
 
@@ -975,6 +1053,7 @@ typedef struct {
     float loop_volume[NUM_LOOPS];
     float loop_send[NUM_LOOPS];   /* post-fader send into the FDN */
     fdn_t send_reverb;
+    glitch_t glitch;
     limiter_t out_lim;
 } inst_t;
 
@@ -1190,6 +1269,182 @@ static void close_recording(loop_engine_t *loop) {
 
 /* ---- instance lifecycle ---- */
 
+static void glitch_init(glitch_t *g, uint32_t seed) {
+    memset(g, 0, sizeof(*g));
+    g->mix     = 0.0f;                    /* the page is inert until asked for */
+    g->odds    = GLITCH_DEFAULT_ODDS;
+    g->size    = GLITCH_DEFAULT_SIZE;
+    g->reach   = 0.0f;                    /* grains from the most recent audio */
+    g->width   = GLITCH_DEFAULT_WIDTH;
+    g->step_ms = GLITCH_STEP_MS_DEFAULT;
+    g->pitch   = 0.0f;
+    g->kind    = 0;
+    g->pan_l = g->pan_r = 1.0f;
+    g->step_left = 1;                     /* roll on the very first sample */
+    g->rng = seed ? seed : 0x9E3779B9u;
+}
+
+/* `wpos` is the ring slot just written, i.e. the newest sample. */
+static void glitch_roll(glitch_t *g, int wpos) {
+    int step = (int)(g->step_ms * 0.001f * SAMPLE_RATE);
+    if (step < GLITCH_MIN_STEP_FRAMES)   step = GLITCH_MIN_STEP_FRAMES;
+    if (step > GLITCH_BUF_FRAMES / 2)    step = GLITCH_BUF_FRAMES / 2;
+    g->step_len  = step;
+    g->step_left = step;
+    g->step_pos  = 0;
+
+    g->active = (rng_range(&g->rng, 0.0f, 1.0f) < g->odds);
+    if (!g->active) return;
+
+    g->effect = (g->kind == 0) ? (int)(rng_next(&g->rng) % (uint32_t)GE_COUNT)
+                               : (g->kind - 1);
+
+    /* Size sets the slice as a fraction of the step, never the whole of it
+     * at the bottom of the range — a zero-length slice is a divide by
+     * nothing and a stutter you cannot hear. */
+    int slen = (int)((float)step * (0.05f + 0.95f * g->size));
+    if (slen < GLITCH_MIN_SLICE)          slen = GLITCH_MIN_SLICE;
+    if (slen > GLITCH_BUF_FRAMES - 2)     slen = GLITCH_BUF_FRAMES - 2;
+    g->slice_len = slen;
+
+    /* Reach: at 0 the slice is the audio that just went past, which is the
+     * classic stutter. Turned up, the grain is grabbed from somewhere in
+     * the last two seconds — the page starts quoting the memory rather
+     * than repeating it. */
+    int back = slen;
+    if (g->reach > 0.0f) {
+        int span = GLITCH_BUF_FRAMES - slen - 2;
+        if (span > 0) back += (int)rng_range(&g->rng, 0.0f, (float)span * g->reach);
+    }
+    g->slice_start = (int)(((wpos - back) % GLITCH_BUF_FRAMES + GLITCH_BUF_FRAMES)
+                           % GLITCH_BUF_FRAMES);
+
+    double pr = pow(2.0, (double)g->pitch / 12.0);
+    g->rate_mul = 1.0;
+    switch (g->effect) {
+    case GE_REVERSE:
+        g->read = (double)slen - 1.0; g->rate = -pr; break;
+    case GE_TAPE:
+        /* per-sample multiplier that lands on 2% of the starting rate by
+         * the end of the step, whatever the step length is */
+        g->read = 0.0; g->rate = pr;
+        g->rate_mul = pow(0.02, 1.0 / (double)step);
+        break;
+    case GE_GATE:
+        g->gate_period = slen < 64 ? 64 : slen;
+        g->gate_pos = 0; g->read = 0.0; g->rate = pr;
+        break;
+    case GE_CRUSH:
+        /* Hold caps at 16 samples (~2.7 kHz), not 64. Downsampling is a
+         * step function by definition — its discontinuity is the SOUND,
+         * not a click — but at 64 the steps are a large fraction of the
+         * waveform and it stops reading as lo-fi and starts reading as
+         * broken. See test34, which bounds Crush separately for exactly
+         * this reason. */
+        g->crush_hold = 1 + (int)(g->size * 15.0f);
+        g->crush_pos = 0; g->crush_l = g->crush_r = 0.0f;
+        g->read = 0.0; g->rate = pr;
+        break;
+    default:
+        g->read = 0.0; g->rate = pr; break;
+    }
+
+    float p = rng_bipolar(&g->rng) * g->width;
+    g->pan_l = (p <= 0.0f) ? 1.0f : 1.0f - p;
+    g->pan_r = (p >= 0.0f) ? 1.0f : 1.0f + p;
+}
+
+static inline void glitch_process(glitch_t *g, float live_l, float live_r,
+                                  float *out_l, float *out_r) {
+    int wpos = g->w;
+    g->buf_l[wpos] = live_l;
+    g->buf_r[wpos] = live_r;
+    g->w = (wpos + 1 == GLITCH_BUF_FRAMES) ? 0 : wpos + 1;
+
+    if (--g->step_left <= 0) glitch_roll(g, wpos);
+    g->step_pos++;
+
+    *out_l = live_l;
+    *out_r = live_r;
+    if (g->mix <= 0.0f || !g->active) return;
+
+    float gl = live_l, gr = live_r, env = 1.0f;
+
+    switch (g->effect) {
+    case GE_GATE: {
+        /* square, but ramped at both edges */
+        int half = g->gate_period / 2;
+        float e = 0.0f;
+        if (g->gate_pos < half) {
+            int d = g->gate_pos, rem = half - g->gate_pos;
+            e = 1.0f;
+            if (d   < GLITCH_FADE_FRAMES) e = (float)d   / GLITCH_FADE_FRAMES;
+            if (rem < GLITCH_FADE_FRAMES) {
+                float f = (float)rem / GLITCH_FADE_FRAMES;
+                if (f < e) e = f;
+            }
+        }
+        gl = live_l * e; gr = live_r * e;
+        if (++g->gate_pos >= g->gate_period) g->gate_pos = 0;
+        break;
+    }
+    case GE_CRUSH: {
+        if (g->crush_pos <= 0) {
+            float levels = powf(2.0f, 12.0f - 9.0f * g->size);
+            g->crush_l = floorf(live_l * levels + 0.5f) / levels;
+            g->crush_r = floorf(live_r * levels + 0.5f) / levels;
+            g->crush_pos = g->crush_hold;
+        }
+        g->crush_pos--;
+        gl = g->crush_l; gr = g->crush_r;
+        break;
+    }
+    default: {
+        /* STUTTER / REWIND / TAPE all read the slice; only the rate differs */
+        if (g->read >= (double)g->slice_len) g->read -= (double)g->slice_len;
+        if (g->read < 0.0)                   g->read += (double)g->slice_len;
+
+        double idx = (double)g->slice_start + g->read;
+        int i0 = (int)idx % GLITCH_BUF_FRAMES;
+        double fr = idx - floor(idx);
+        int i1 = (i0 + 1 == GLITCH_BUF_FRAMES) ? 0 : i0 + 1;
+        gl = (float)((double)g->buf_l[i0] * (1.0 - fr) + (double)g->buf_l[i1] * fr);
+        gr = (float)((double)g->buf_r[i0] * (1.0 - fr) + (double)g->buf_r[i1] * fr);
+
+        /* every wrap back to the head of the slice is a splice */
+        double edge = g->read < (double)g->slice_len - g->read
+                    ? g->read : (double)g->slice_len - g->read;
+        if (edge < GLITCH_FADE_FRAMES) env = (float)(edge / GLITCH_FADE_FRAMES);
+
+        if (g->effect == GE_TAPE) {
+            g->rate *= g->rate_mul;
+            /* a tape coming to rest goes quiet as it slows, or the last
+             * of the step is a DC-ish drone at a semitone nobody chose */
+            double a = fabs(g->rate) * 3.0;
+            if (a > 1.0) a = 1.0;
+            env *= (float)a;
+        }
+        g->read += g->rate;
+        break;
+    }
+    }
+
+    /* step edges, then pan, then the crossfade back toward the untouched
+     * signal — mix is the last word so 0 is bit-for-bit bypass */
+    {
+        int rem = g->step_len - g->step_pos;
+        if (g->step_pos < GLITCH_FADE_FRAMES)
+            env *= (float)g->step_pos / GLITCH_FADE_FRAMES;
+        if (rem >= 0 && rem < GLITCH_FADE_FRAMES)
+            env *= (float)rem / GLITCH_FADE_FRAMES;
+    }
+    gl *= g->pan_l;
+    gr *= g->pan_r;
+    env *= g->mix;
+    *out_l = live_l + (gl - live_l) * env;
+    *out_r = live_r + (gr - live_r) * env;
+}
+
 static void init_loop(loop_engine_t *loop, uint32_t rng_seed) {
     memset(loop, 0, sizeof(*loop));
     /* MUST come after the memset: zero here means a read rate of zero and
@@ -1243,6 +1498,22 @@ static void *v2_create_instance(const char *dir, const char *cfg) {
         return NULL;
     }
     fdn_clear(&s->send_reverb);
+
+    glitch_init(&s->glitch, 0x51ED2C17u);
+    s->glitch.buf_l = (float *)calloc((size_t)GLITCH_BUF_FRAMES, sizeof(float));
+    s->glitch.buf_r = (float *)calloc((size_t)GLITCH_BUF_FRAMES, sizeof(float));
+    if (!s->glitch.buf_l || !s->glitch.buf_r) {
+        free(s->glitch.buf_l);
+        free(s->glitch.buf_r);
+        for (int j = 0; j < NUM_LOOPS; j++) {
+            free(s->loops[j].buffer);
+            reverb_free(&s->loops[j].wash);
+        }
+        fdn_free(&s->send_reverb);
+        free(s);
+        return NULL;
+    }
+
     limiter_init(&s->out_lim, OUT_LIMIT_ATTACK_S, OUT_LIMIT_RELEASE_S);
 
     s->input_routing = ROUTE_A;  /* default — no OFF state to start unrouted in */
@@ -1258,6 +1529,8 @@ static void v2_destroy_instance(void *i) {
         reverb_free(&s->loops[li].wash);
     }
     fdn_free(&s->send_reverb);
+    free(s->glitch.buf_l);
+    free(s->glitch.buf_r);
     free(s);
 }
 
@@ -1890,6 +2163,16 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
             wet_total_r += rr;
         }
 
+        /* Glitch sits here on purpose: after the space, so it stutters the
+         * whole remembered signal rather than four separate ones, and
+         * before the limiter, so a repeat that piles up still gets caught. */
+        {
+            float gl, gr;
+            glitch_process(&s->glitch, wet_total_l, wet_total_r, &gl, &gr);
+            wet_total_l = gl;
+            wet_total_r = gr;
+        }
+
         {
             float ml = fabsf(wet_total_l) > fabsf(wet_total_r)
                      ? fabsf(wet_total_l) : fabsf(wet_total_r);
@@ -2117,6 +2400,36 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
         return;
     }
 
+    /* Glitch page — all instance-level, no loop prefix. */
+    if (strncmp(key, "glitch_", 7) == 0) {
+        const char *k = key + 7;
+        if (strcmp(k, "mix") == 0)   { s->glitch.mix   = clampf((float)atof(val), 0.0f, 1.0f); return; }
+        if (strcmp(k, "odds") == 0)  { s->glitch.odds  = clampf((float)atof(val), 0.0f, 1.0f); return; }
+        if (strcmp(k, "size") == 0)  { s->glitch.size  = clampf((float)atof(val), 0.0f, 1.0f); return; }
+        if (strcmp(k, "reach") == 0) { s->glitch.reach = clampf((float)atof(val), 0.0f, 1.0f); return; }
+        if (strcmp(k, "width") == 0) { s->glitch.width = clampf((float)atof(val), 0.0f, 1.0f); return; }
+        if (strcmp(k, "step") == 0)  {
+            s->glitch.step_ms = clampf((float)atof(val), GLITCH_STEP_MS_MIN, GLITCH_STEP_MS_MAX);
+            return;
+        }
+        if (strcmp(k, "pitch") == 0) {
+            s->glitch.pitch = clampf((float)atof(val), -GLITCH_PITCH_RANGE, GLITCH_PITCH_RANGE);
+            return;
+        }
+        if (strcmp(k, "kind") == 0) {
+            /* Labels first, index second — the host learns an enum's wire
+             * format from what get_param returns, and this one returns a
+             * label. input_routing records what a bare atoi() cost. */
+            for (int i = 0; i < GLITCH_KIND_COUNT; i++) {
+                if (strcmp(val, GLITCH_KIND_LABELS[i]) == 0) { s->glitch.kind = i; return; }
+            }
+            int n = atoi(val);
+            if (n >= 0 && n < GLITCH_KIND_COUNT) s->glitch.kind = n;
+            return;
+        }
+        return;
+    }
+
     /* Master page — checked by exact key BEFORE the loopX_ prefix scan,
      * since "loopA_volume" etc. share the "loopA_" prefix with Loop A's
      * own params but are actually Master-page keys. */
@@ -2219,6 +2532,19 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
     if (strcmp(key, "name") == 0) return snprintf(buf, len, "Forgetful");
 
     /* Master page — same exact-match-before-prefix-scan ordering as set_param */
+    if (strncmp(key, "glitch_", 7) == 0) {
+        const char *k = key + 7;
+        if (strcmp(k, "mix") == 0)   return snprintf(buf, len, "%.3f", (double)s->glitch.mix);
+        if (strcmp(k, "odds") == 0)  return snprintf(buf, len, "%.3f", (double)s->glitch.odds);
+        if (strcmp(k, "size") == 0)  return snprintf(buf, len, "%.3f", (double)s->glitch.size);
+        if (strcmp(k, "reach") == 0) return snprintf(buf, len, "%.3f", (double)s->glitch.reach);
+        if (strcmp(k, "width") == 0) return snprintf(buf, len, "%.3f", (double)s->glitch.width);
+        if (strcmp(k, "step") == 0)  return snprintf(buf, len, "%.0f", (double)s->glitch.step_ms);
+        if (strcmp(k, "pitch") == 0) return snprintf(buf, len, "%.0f", (double)s->glitch.pitch);
+        if (strcmp(k, "kind") == 0)
+            return snprintf(buf, len, "%s", GLITCH_KIND_LABELS[s->glitch.kind]);
+        return -1;
+    }
     if (strcmp(key, "input_routing") == 0) return snprintf(buf, len, "%s", ROUTE_LABELS[s->input_routing]);
     if (strcmp(key, "loopA_volume") == 0)  return snprintf(buf, len, "%.3f", s->loop_volume[0]);
     if (strcmp(key, "loopB_volume") == 0)  return snprintf(buf, len, "%.3f", s->loop_volume[1]);
@@ -2380,6 +2706,47 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}",
                 c, c, c, c, c, c, c, c);
         }
+        /* Glitch. The five 0..1 knobs declare a "%" unit, which the UI
+         * SCALES BY 100 for display — declaring 0..100 here is what once
+         * put "Trim, 5000%" on the device. Step is ms and Pitch is
+         * semitones, so neither is scaled. */
+        pos += snprintf(json + pos, sizeof(json) - pos,
+            ",{\"key\":\"glitch_mix\",\"name\":\"Mix\",\"type\":\"float\","
+              "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01,\"unit\":\"%%\","
+              "\"display_format\":\"%%.0f\"}"
+            ",{\"key\":\"glitch_step\",\"name\":\"Step\",\"type\":\"float\","
+              "\"min\":%.0f,\"max\":%.0f,\"default\":%.0f,\"step\":5,\"unit\":\"ms\","
+              "\"display_format\":\"%%.0f\"}"
+            ",{\"key\":\"glitch_odds\",\"name\":\"Odds\",\"type\":\"float\","
+              "\"min\":0,\"max\":1,\"default\":%.2f,\"step\":0.01,\"unit\":\"%%\","
+              "\"display_format\":\"%%.0f\"}"
+            ",{\"key\":\"glitch_size\",\"name\":\"Size\",\"type\":\"float\","
+              "\"min\":0,\"max\":1,\"default\":%.2f,\"step\":0.01,\"unit\":\"%%\","
+              "\"display_format\":\"%%.0f\"}",
+            (double)GLITCH_STEP_MS_MIN, (double)GLITCH_STEP_MS_MAX,
+            (double)GLITCH_STEP_MS_DEFAULT,
+            (double)GLITCH_DEFAULT_ODDS, (double)GLITCH_DEFAULT_SIZE);
+        pos += snprintf(json + pos, sizeof(json) - pos,
+            ",{\"key\":\"glitch_kind\",\"name\":\"Kind\",\"type\":\"enum\","
+              "\"options\":[");
+        for (int i = 0; i < GLITCH_KIND_COUNT; i++) {
+            pos += snprintf(json + pos, sizeof(json) - pos,
+                "%s\"%s\"", i ? "," : "", GLITCH_KIND_LABELS[i]);
+        }
+        pos += snprintf(json + pos, sizeof(json) - pos,
+            "],\"default\":\"%s\"}"
+            ",{\"key\":\"glitch_reach\",\"name\":\"Reach\",\"type\":\"float\","
+              "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01,\"unit\":\"%%\","
+              "\"display_format\":\"%%.0f\"}"
+            ",{\"key\":\"glitch_pitch\",\"name\":\"Pitch\",\"type\":\"float\","
+              "\"min\":%.0f,\"max\":%.0f,\"default\":0,\"step\":1,\"unit\":\"st\","
+              "\"display_format\":\"%%.0f\"}"
+            ",{\"key\":\"glitch_width\",\"name\":\"Width\",\"type\":\"float\","
+              "\"min\":0,\"max\":1,\"default\":%.2f,\"step\":0.01,\"unit\":\"%%\","
+              "\"display_format\":\"%%.0f\"}",
+            GLITCH_KIND_LABELS[0],
+            (double)-GLITCH_PITCH_RANGE, (double)GLITCH_PITCH_RANGE,
+            (double)GLITCH_DEFAULT_WIDTH);
         pos += snprintf(json + pos, sizeof(json) - pos, "]");
         if (pos >= (int)sizeof(json) || pos >= len) return -1;
         strcpy(buf, json);
@@ -2427,7 +2794,8 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                 "{\"level\":\"loopA\",\"label\":\"Loop A\"},"
                 "{\"level\":\"loopB\",\"label\":\"Loop B\"},"
                 "{\"level\":\"loopC\",\"label\":\"Loop C\"},"
-                "{\"level\":\"loopD\",\"label\":\"Loop D\"}]}"
+                "{\"level\":\"loopD\",\"label\":\"Loop D\"},"
+                "{\"level\":\"glitch\",\"label\":\"Glitch\"}]}"
               /* Sound: level on the top row, tone underneath, so each
                * memory reads as a column — how loud it is, and what is
                * left of it. Speed moved to Main, under the transport it
@@ -2457,6 +2825,14 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                   "\"loop%c_wow\",\"loop%c_hf_loss\",\"loop%c_chaos\",\"loop%c_hiss\"]}",
                 c, c, c, c, c, c, c, c, c, c);
         }
+        /* Glitch last, after the four memories — it is the end of the
+         * chain in the audio path and the end of the bank bar to match.
+         * Top row is the sequencer (how often, how likely, how big), the
+         * bottom row is the character. */
+        pos += snprintf(json + pos, sizeof(json) - pos,
+            ",\"glitch\":{\"label\":\"Glitch\",\"knobs\":["
+              "\"glitch_mix\",\"glitch_step\",\"glitch_odds\",\"glitch_size\","
+              "\"glitch_kind\",\"glitch_reach\",\"glitch_pitch\",\"glitch_width\"]}");
         pos += snprintf(json + pos, sizeof(json) - pos, "}}");
         if (pos >= (int)sizeof(json) || pos >= len) return -1;
         strcpy(buf, json);
