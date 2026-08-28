@@ -378,6 +378,45 @@ static int max_step(const int16_t *a) {
     return m;
 }
 
+
+/* High-frequency content of the output, as first-difference RMS over total
+ * RMS. Normalised so a level change alone does not move it — test36 needs
+ * to see WHERE a filter sits, not how loud the result is. */
+static double measure_hf_ratio(audio_fx_api_v2_t *api, void *inst, int blocks) {
+    int16_t buf[BLOCK_FRAMES * 2];
+    double lo = 0.0, hi = 0.0;
+    for (int b = 0; b < blocks; b++) {
+        fill_silence(buf, BLOCK_FRAMES);
+        api->process_block(inst, buf, BLOCK_FRAMES);
+        for (int i = 0; i < BLOCK_FRAMES; i++) {
+            double v = buf[i * 2];
+            lo += v * v;
+            if (i) { double d = v - buf[(i - 1) * 2]; hi += d * d; }
+        }
+    }
+    return sqrt(hi / (lo + 1e-9));
+}
+
+
+/* Records a full buffer of BROADBAND NOISE into loop A.
+ *
+ * Not the 440 Hz tone record_full_buffer_loop_a lays down: a pure sine has
+ * almost no high-frequency content, so a lowpass barely moves any spectral
+ * measure taken on it. That mistake has been made here before and it makes
+ * a filter look broken when it is working. */
+static void record_full_buffer_loop_a_noise(audio_fx_api_v2_t *api, void *inst) {
+    int16_t buf[BLOCK_FRAMES * 2];
+    long remaining = TEST_BUFFER_CAPACITY_FRAMES;
+    api->set_param(inst, "input_routing", TEST_ROUTE_A);
+    press_record(api, inst);
+    while (remaining > 0) {
+        int n = remaining < BLOCK_FRAMES ? (int)remaining : BLOCK_FRAMES;
+        fill_noise(buf, n, 0.40f);
+        api->process_block(inst, buf, n);
+        remaining -= n;
+    }
+}
+
 /* Constant-value counterpart, for test14: fills the whole buffer with one
  * unchanging sample value, so the recorded content is known exactly
  * (`value`, every index). */
@@ -2135,6 +2174,82 @@ int main(void) {
         api->destroy_instance(inst);
     }
 
+
+    /* ---- Test 36: Tone sits AHEAD of the Darken wash and the VINYL
+     * crackle, and behind the write-back.
+     *
+     * It used to be dead last, so turning it down darkened the reverb and
+     * the surface noise along with the loop. This pins the new order
+     * WITHOUT needing a reference build: with Tone hard left, switching
+     * VINYL from off to full must raise the output's high-frequency
+     * content, because the crackle is added after the filter. Measured,
+     * the old order moved this ratio 0.99x — the filter ate the crackle —
+     * and the new one moves it 2.52x.
+     *
+     * That discrimination is the whole point. The existing Tone test
+     * passed with the filter in EITHER position, so it could not have
+     * caught this move in either direction. ---- */
+    {
+        double quiet, crackly;
+        {
+            void *inst = api->create_instance(".", NULL);
+            record_full_buffer_loop_a_noise(api, inst);
+            api->set_param(inst, "loopA_decay_rate", "300");
+            api->set_param(inst, "loopA_tone", "-0.9");
+            api->set_param(inst, "loopA_chaos", "0");
+            run_silence(api, inst, 340L * BLOCK_FRAMES);
+            quiet = measure_hf_ratio(api, inst, 120);
+            api->destroy_instance(inst);
+        }
+        {
+            void *inst = api->create_instance(".", NULL);
+            record_full_buffer_loop_a_noise(api, inst);
+            api->set_param(inst, "loopA_decay_rate", "300");
+            api->set_param(inst, "loopA_tone", "-0.9");
+            api->set_param(inst, "loopA_chaos", "1.0");
+            run_silence(api, inst, 340L * BLOCK_FRAMES);
+            crackly = measure_hf_ratio(api, inst, 120);
+            api->destroy_instance(inst);
+        }
+        check(quiet > 0.0, "test36: the lowpassed loop still produces output");
+        check(crackly > quiet * 1.8,
+              "test36: VINYL crackle survives a hard-left Tone — the filter is "
+              "ahead of it, not after it");
+
+        /* And the other half: Tone must NOT move any earlier than the
+         * write-back. Inside the recursion it stops being a tone control —
+         * measured over 20 passes at -0.6 with Hiss on, brightness
+         * collapsed 0.069 -> 0.020 while RMS ROSE 777 -> 13454, because the
+         * level regulator shares that loop and boosts to replace what the
+         * filter removes. Dark and loud at once, and centring the knob does
+         * not undo it. So: a filtered loop must stay REVERSIBLE. */
+        {
+            void *inst = api->create_instance(".", NULL);
+            record_full_buffer_loop_a_noise(api, inst);
+            api->set_param(inst, "loopA_decay_rate", "300");
+            api->set_param(inst, "loopA_hiss", "0.15");
+            api->set_param(inst, "loopA_tone", "0");
+            run_silence(api, inst, 340L * BLOCK_FRAMES);
+            double open_before = measure_hf_ratio(api, inst, 60);
+
+            api->set_param(inst, "loopA_tone", "-0.6");
+            run_silence(api, inst, 3400L * BLOCK_FRAMES);   /* ~20 passes */
+            double filtered = measure_hf_ratio(api, inst, 60);
+
+            api->set_param(inst, "loopA_tone", "0");
+            run_silence(api, inst, 340L * BLOCK_FRAMES);
+            double open_after = measure_hf_ratio(api, inst, 60);
+
+            check(filtered < open_before * 0.5,
+                  "test36: the filter actually filters");
+            check(open_after > open_before * 0.5,
+                  "test36: and centring RESTORES it — Tone is outside the "
+                  "write-back, so twenty passes of lowpass did not eat the "
+                  "medium permanently");
+            api->destroy_instance(inst);
+        }
+    }
+
     /* The PASS line used to print unconditionally and the runner grepped
      * for it, so a suite with real failures still read as green — the same
      * class of blind pass signal as the earlier `grep -c "^FAIL"` that
@@ -2152,6 +2267,6 @@ int main(void) {
            "medium, Darken compounding, VINYL gate, level regulator, splice "
            "fade, Sound page, send reverb, speed glide, Tone filter, Trim + "
            "join crossfade, reset on take death, Glitch page, absent-key "
-           "contract)\n");
+           "contract, Tone ordering)\n");
     return 0;
 }

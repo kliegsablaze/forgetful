@@ -1971,6 +1971,44 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                     loop->medium_last_idx = -1;
                 }
 
+                /* Tone — see TONE_LP_MIN_HZ. Sits HERE: after the
+                 * write-back, so it is outside the recursion, but ahead of
+                 * the Darken wash and the VINYL crackle, so those two
+                 * arrive unfiltered. Filter the instrument, then add the
+                 * tape.
+                 *
+                 * It used to be dead last, after the wash and the crackle,
+                 * which meant turning it down darkened the reverb and the
+                 * surface noise along with the loop.
+                 *
+                 * It must NOT move any earlier. Applied to the raw read it
+                 * lands inside the write-back, and then it is not a tone
+                 * control at all: measured over 20 passes at -0.6 with Hiss
+                 * engaged, brightness collapsed 0.069 -> 0.020 AND RMS rose
+                 * 777 -> 13454, ending 2.5x louder than centre. The level
+                 * regulator sits in that same loop and boosts to replace
+                 * the energy the filter keeps taking out, so the loop goes
+                 * dark and loud at once and centring the knob does not undo
+                 * it (0.022 after). A per-pass filter is what Darken is
+                 * for; this one is reversible on purpose. */
+                if (loop->tone_mode != 0) {
+                    float a = loop->tone_a;
+                    loop->tone_z1_l += a * (med_l - loop->tone_z1_l);
+                    loop->tone_z1_r += a * (med_r - loop->tone_z1_r);
+                    if (loop->tone_mode < 0) {
+                        loop->tone_z2_l += a * (loop->tone_z1_l - loop->tone_z2_l);
+                        loop->tone_z2_r += a * (loop->tone_z1_r - loop->tone_z2_r);
+                        med_l = loop->tone_z2_l; med_r = loop->tone_z2_r;
+                    } else {
+                        float h_l = med_l - loop->tone_z1_l;
+                        float h_r = med_r - loop->tone_z1_r;
+                        loop->tone_z2_l += a * (h_l - loop->tone_z2_l);
+                        loop->tone_z2_r += a * (h_r - loop->tone_z2_r);
+                        med_l = h_l - loop->tone_z2_l;
+                        med_r = h_r - loop->tone_z2_r;
+                    }
+                }
+
                 /* ---- output only, never written back ------------------
                  * The wash is a reverb, and a reverb inside a feedback path
                  * builds without bound — it belongs after the tape, not on
@@ -2123,26 +2161,6 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 loop->memory = 0.0f;
                 break;
             }
-            }
-
-            /* Tone — see TONE_LP_MIN_HZ. Output only; nothing here is
-             * written back onto the medium. */
-            if (loop->tone_mode != 0) {
-                float a = loop->tone_a;
-                loop->tone_z1_l += a * (wet_l - loop->tone_z1_l);
-                loop->tone_z1_r += a * (wet_r - loop->tone_z1_r);
-                if (loop->tone_mode < 0) {
-                    loop->tone_z2_l += a * (loop->tone_z1_l - loop->tone_z2_l);
-                    loop->tone_z2_r += a * (loop->tone_z1_r - loop->tone_z2_r);
-                    wet_l = loop->tone_z2_l; wet_r = loop->tone_z2_r;
-                } else {
-                    float h_l = wet_l - loop->tone_z1_l;
-                    float h_r = wet_r - loop->tone_z1_r;
-                    loop->tone_z2_l += a * (h_l - loop->tone_z2_l);
-                    loop->tone_z2_r += a * (h_r - loop->tone_z2_r);
-                    wet_l = h_l - loop->tone_z2_l;
-                    wet_r = h_r - loop->tone_z2_r;
-                }
             }
 
             /* post-fader: turning a memory down turns its send down with
