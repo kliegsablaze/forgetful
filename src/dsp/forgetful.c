@@ -2525,6 +2525,30 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
     if (suffix) loop_set_param(&s->loops[li], suffix, val);
 }
 
+/* A key this module does not implement.
+ *
+ * "" and not -1, and the difference is not cosmetic. A get_param read has
+ * THREE answers on this wire, not two: text is an answer, "" means the
+ * channel served us and the key produced nothing, and -1 means the read
+ * DID NOT COMPLETE. shadow_chain_mgmt.c turns a negative return into
+ * error=4 / result_len=-1, the JS side reads that as null, and null is
+ * retried — so returning -1 for a key we simply do not have asks the host
+ * to keep asking, forever.
+ *
+ * It did. The host probes preset_name, is_loading and display_name on
+ * every repaint of a slot; a device left on the Forgetful page logged
+ * 19,913 param_giveup events on fx1:preset_name alone, about one a
+ * second. On a screen where one parameter round-trip (~2.8ms) already
+ * costs more than rendering the entire display (~1.68ms), that is real
+ * IPC spent on a question that was answered correctly the first time.
+ *
+ * -1 stays for genuine failures only: a bad call, or a contract too large
+ * for the caller's buffer. Those are reads that really did not complete. */
+static int param_absent(char *buf, int len) {
+    if (len > 0) buf[0] = '\0';
+    return 0;
+}
+
 static int v2_get_param(void *inst, const char *key, char *buf, int len) {
     inst_t *s = (inst_t *)inst;
     if (!s || !key || !buf) return -1;
@@ -2543,7 +2567,7 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
         if (strcmp(k, "pitch") == 0) return snprintf(buf, len, "%.0f", (double)s->glitch.pitch);
         if (strcmp(k, "kind") == 0)
             return snprintf(buf, len, "%s", GLITCH_KIND_LABELS[s->glitch.kind]);
-        return -1;
+        return param_absent(buf, len);
     }
     if (strcmp(key, "input_routing") == 0) return snprintf(buf, len, "%s", ROUTE_LABELS[s->input_routing]);
     if (strcmp(key, "loopA_volume") == 0)  return snprintf(buf, len, "%.3f", s->loop_volume[0]);
@@ -2596,7 +2620,14 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
 
     int li;
     const char *suffix = loop_key_suffix(key, &li);
-    if (suffix) return loop_get_param(&s->loops[li], s->total_frames, suffix, buf, len);
+    if (suffix) {
+        /* loop_get_param's -1 means "not one of this loop's keys", which is
+         * an ABSENCE, not a failed read — funnel it through param_absent
+         * like every other unknown key. Without this, `loopA_<anything>`
+         * stayed a retry loop even after the general case was fixed. */
+        int n = loop_get_param(&s->loops[li], s->total_frames, suffix, buf, len);
+        return n < 0 ? param_absent(buf, len) : n;
+    }
 
     if (strcmp(key, "state") == 0) {
         /* An empty object, not a refusal. Returning -1 here would read as
@@ -2839,7 +2870,7 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
         return pos;
     }
 
-    return -1;
+    return param_absent(buf, len);
 }
 
 static audio_fx_api_v2_t g_api;

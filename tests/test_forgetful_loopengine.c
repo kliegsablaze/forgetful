@@ -2090,6 +2090,51 @@ int main(void) {
         }
     }
 
+
+    /* ---- Test 35: a key we do not implement answers "" (len 0), never -1.
+     *
+     * shadow_chain_mgmt.c maps a negative return to error=4 / result_len=-1,
+     * the JS side reads that as null, and null means "the read did not
+     * complete" — which the host RETRIES. A device left on the Forgetful
+     * page logged 19,913 param_giveup events on fx1:preset_name alone,
+     * roughly one a second, purely because a key we do not have was
+     * answered as a failure rather than as an absence.
+     *
+     * The probed keys are listed explicitly rather than tested with one
+     * made-up key: they are what the host actually asks for on a repaint,
+     * and a future handler that starts answering one of them for real
+     * should have to come here and say so. ---- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        static const char *probed[] = {
+            "preset_name", "is_loading", "display_name", "name_unset",
+            "patch_count", "knob_1_name", "dirty", "state_unknown_key",
+            "glitch_nonesuch", "loopA_nonesuch", "totally_made_up"
+        };
+        for (size_t k = 0; k < sizeof(probed)/sizeof(probed[0]); k++) {
+            char b[256];
+            memset(b, 'x', sizeof(b));
+            int n = api->get_param(inst, probed[k], b, sizeof(b));
+            check(n >= 0,
+                  "test35: an unimplemented key is SERVED, not failed — a "
+                  "negative return reads as 'did not complete' and is retried");
+            check(n == 0 && b[0] == '\0',
+                  "test35: ...and the answer is an empty string");
+        }
+
+        /* Not vacuous: a key we DO implement still answers with content, and
+         * a genuinely broken call still fails. */
+        {
+            char b[64];
+            int n = api->get_param(inst, "name", b, sizeof(b));
+            check(n > 0 && b[0] != '\0', "test35: a real key still answers");
+            check(api->get_param(inst, "name", NULL, 64) < 0,
+                  "test35: a genuinely broken call still returns -1 — the "
+                  "failure channel is kept for actual failures");
+        }
+        api->destroy_instance(inst);
+    }
+
     /* The PASS line used to print unconditionally and the runner grepped
      * for it, so a suite with real failures still read as green — the same
      * class of blind pass signal as the earlier `grep -c "^FAIL"` that
@@ -2106,6 +2151,7 @@ int main(void) {
            "knob slew, overdub toggle, click-free overdub write, recursive "
            "medium, Darken compounding, VINYL gate, level regulator, splice "
            "fade, Sound page, send reverb, speed glide, Tone filter, Trim + "
-           "join crossfade, reset on take death, Glitch page)\n");
+           "join crossfade, reset on take death, Glitch page, absent-key "
+           "contract)\n");
     return 0;
 }
