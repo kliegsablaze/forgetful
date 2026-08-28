@@ -351,6 +351,12 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * instead of converging after one pass. Soft-kneed (a squared ratio)
  * rather than switched, so nothing clicks. */
 #define SPEED_GLIDE_SECONDS   5.0f
+/* FREQ: fine varispeed, a full octave either way. 0.05s is a compromise —
+ * long enough that a detent is a slide and not a step, short enough that
+ * the pitch is where you put it by the time you have heard it against the
+ * other loop. */
+#define FREQ_SEMITONE_RANGE  12.0f
+#define FREQ_GLIDE_SECONDS    0.05f
 
 /* ---- Trim: one knob, both ends ---------------------------------------
  * Centre plays the whole take. Left walks the loop's START forward, right
@@ -453,44 +459,15 @@ typedef struct {
     int16_t l, r;
 } frame16_t;
 
-/* Comb/allpass delay lengths (samples at 44100Hz) — the first 4 comb and
- * first 2 allpass lengths from freeverb.c's own tuning tables, R channel
- * offset +23 samples for stereo decorrelation, same trick freeverb.c uses. */
-static const int reverb_comb_tuning_l[REVERB_NUM_COMBS] = { 1116, 1188, 1277, 1356 };
-static const int reverb_comb_tuning_r[REVERB_NUM_COMBS] = {
-    1116 + 23, 1188 + 23, 1277 + 23, 1356 + 23
-};
-static const int reverb_allpass_tuning_l[REVERB_NUM_ALLPASS] = { 556, 441 };
-static const int reverb_allpass_tuning_r[REVERB_NUM_ALLPASS] = { 556 + 23, 441 + 23 };
-
-/* Heap-allocated (not a fixed MAX_DELAY array like freeverb.c's — this runs
- * up to 4x concurrently, one per loop, so exact-sized buffers matter). */
-typedef struct {
-    float *buf;
-    int size;
-    int idx;
-    float filterstore;
-} reverb_comb_t;
-
+/* All that survives of the per-loop Schroeder wash that used to drive
+ * Darken (removed 2026-08-28): the FDN send reverb still diffuses its
+ * input through a bank of these. The comb half, the reverb_t wrapper and
+ * the freeverb tuning tables went with Darken. */
 typedef struct {
     float *buf;
     int size;
     int idx;
 } reverb_allpass_t;
-
-typedef struct {
-    reverb_comb_t    comb_l[REVERB_NUM_COMBS], comb_r[REVERB_NUM_COMBS];
-    reverb_allpass_t allpass_l[REVERB_NUM_ALLPASS], allpass_r[REVERB_NUM_ALLPASS];
-} reverb_t;
-
-static int reverb_comb_alloc(reverb_comb_t *c, int size) {
-    c->buf = (float *)calloc((size_t)size, sizeof(float));
-    if (!c->buf) return -1;
-    c->size = size;
-    c->idx = 0;
-    c->filterstore = 0.0f;
-    return 0;
-}
 
 static int reverb_allpass_alloc(reverb_allpass_t *a, int size) {
     a->buf = (float *)calloc((size_t)size, sizeof(float));
@@ -500,16 +477,6 @@ static int reverb_allpass_alloc(reverb_allpass_t *a, int size) {
     return 0;
 }
 
-/* damp1/damp2 are passed in fresh each call (not cached on the comb) since
- * Darken's damping is time-varying here, unlike freeverb.c's per-block
- * constant. */
-static inline float reverb_comb_process(reverb_comb_t *c, float input, float feedback, float damp1, float damp2) {
-    float output = c->buf[c->idx];
-    c->filterstore = (output * damp2) + (c->filterstore * damp1);
-    c->buf[c->idx] = input + (c->filterstore * feedback);
-    if (++c->idx >= c->size) c->idx = 0;
-    return output;
-}
 
 static inline float reverb_allpass_process(reverb_allpass_t *a, float input) {
     float bufout = a->buf[a->idx];
@@ -805,7 +772,6 @@ typedef struct {
      * own single field rather than a whole struct for one number. */
 
     flavor_ramp_t wow_ramp;
-    flavor_ramp_t hf_loss_ramp;
     flavor_ramp_t hiss_ramp;
     flavor_ramp_t crackle_ramp;
 
@@ -814,7 +780,7 @@ typedef struct {
      * chases this toward `saturation` at a constant rate every sample (see
      * the LOOPING case); the other four are advanced by chase() using their
      * own flavor_ramp_t's `.step`, which only changes on a set_param write. */
-    float applied_wow, applied_hf_loss, applied_hiss, applied_crackle;
+    float applied_wow, applied_hiss, applied_crackle;
 
     /* buffer & playback */
     frame16_t *buffer;
@@ -836,11 +802,10 @@ typedef struct {
                                         * callback. */
     float medium_target;               /* level the take was recorded at */
     float gate_env;                    /* VINYL gate envelope follower */
-    float darken_lp_l[DARKEN_POLES], darken_lp_r[DARKEN_POLES];
     /* per-block, hoisted out of the sample loop: powf/expf once per block
      * per loop rather than 128 times. The chase behind them moves over
      * seconds, so block granularity is inaudible. */
-    float darken_a, darken_wash, darken_damp1, darken_fb, warp_amt;
+    float warp_amt;
     float gate_thresh, gate_a, gate_r_coef, medium_level_a, medium_gain_a;
     int   medium_active;
     float warp_drift, warp_drift_target;
@@ -862,6 +827,15 @@ typedef struct {
     int   tone_mode;                /* -1 lowpass, 0 bypass, +1 highpass */
     float tone_z1_l, tone_z1_r, tone_z2_l, tone_z2_r;
     float speed_log_cur, speed_log_target, speed_log_step;
+    /* FREQ: fine varispeed in semitones, -12..+12, with its own glide.
+     * Adds to speed in LOG2 space — Speed picks the octave, FREQ trims it
+     * by ear against another loop. Deliberately a rate change and not a
+     * length-preserving pitch shift: this is a tape machine, and Speed is
+     * already the coarse half of the same control. Separate glide because
+     * the two time constants are opposites — Speed takes five seconds on
+     * purpose, and a five-second FREQ cannot be tuned by ear. */
+    float freq_semis;
+    float freq_log_cur, freq_log_target, freq_log_step;
     float speed_eff;   /* exp2(speed_log_cur), what the read head uses */
     float speed_mul;   /* 0.25 / 0.5 / 1 / 2: the SELECTED rate, so the loop shifts
                         * by octaves and its pass takes proportionally
@@ -893,10 +867,6 @@ typedef struct {
                           * (leaving a gap the write never fills). Both are
                           * broadband edges. See the overdub-write block. */
 
-    /* Darken's reverb wash — see the REVERB_NUM_COMBS comment. Buffers are
-     * heap-allocated per instance (v2_create_instance) sized exactly to
-     * reverb_comb_tuning_l/r, not a fixed MAX_DELAY. */
-    reverb_t wash;
 
 
     /* display-only: set the instant memory hits 0; lets the UI see
@@ -909,59 +879,8 @@ typedef struct {
     uint32_t rng_state;
 } loop_engine_t;
 
-/* free(NULL) is a no-op, so this is safe on a loop whose allocation failed
- * partway through reverb_alloc_loop (calloc'd inst_t means every unset
- * .buf starts NULL) as well as on a fully-allocated one. */
-static void reverb_free(reverb_t *rv) {
-    for (int i = 0; i < REVERB_NUM_COMBS; i++) {
-        free(rv->comb_l[i].buf);
-        free(rv->comb_r[i].buf);
-    }
-    for (int i = 0; i < REVERB_NUM_ALLPASS; i++) {
-        free(rv->allpass_l[i].buf);
-        free(rv->allpass_r[i].buf);
-    }
-}
 
-/* Allocates every comb/allpass buffer for one loop. On failure partway
- * through, frees whatever this call already allocated before returning -1
- * — the caller still owns freeing any OTHER loops it already succeeded on. */
-static int reverb_alloc(reverb_t *rv) {
-    for (int i = 0; i < REVERB_NUM_COMBS; i++) {
-        if (reverb_comb_alloc(&rv->comb_l[i], reverb_comb_tuning_l[i]) != 0 ||
-            reverb_comb_alloc(&rv->comb_r[i], reverb_comb_tuning_r[i]) != 0) {
-            reverb_free(rv);
-            return -1;
-        }
-    }
-    for (int i = 0; i < REVERB_NUM_ALLPASS; i++) {
-        if (reverb_allpass_alloc(&rv->allpass_l[i], reverb_allpass_tuning_l[i]) != 0 ||
-            reverb_allpass_alloc(&rv->allpass_r[i], reverb_allpass_tuning_r[i]) != 0) {
-            reverb_free(rv);
-            return -1;
-        }
-    }
-    return 0;
-}
 
-/* One pass of a reverb_t. Mono in, stereo out — the two channels differ
- * only by their comb/allpass tunings, same as freeverb's stereo spread. */
-static inline void reverb_process(reverb_t *rv, float in, float fb,
-                                  float damp1, float *out_l, float *out_r) {
-    float damp2 = 1.0f - damp1;
-    float l = 0.0f, r = 0.0f;
-    for (int c = 0; c < REVERB_NUM_COMBS; c++) {
-        l += reverb_comb_process(&rv->comb_l[c], in, fb, damp1, damp2);
-        r += reverb_comb_process(&rv->comb_r[c], in, fb, damp1, damp2);
-    }
-    l *= 1.0f / (float)REVERB_NUM_COMBS;
-    r *= 1.0f / (float)REVERB_NUM_COMBS;
-    for (int a = 0; a < REVERB_NUM_ALLPASS; a++) {
-        l = reverb_allpass_process(&rv->allpass_l[a], l);
-        r = reverb_allpass_process(&rv->allpass_r[a], r);
-    }
-    *out_l = l; *out_r = r;
-}
 
 /* ================= Glitch — the end-of-chain stumble =================
  *
@@ -1109,21 +1028,6 @@ static float rng_range(uint32_t *seed, float lo, float hi) {
     return lo + u * (hi - lo);
 }
 
-/* Zeroes a loop's reverb tail — every comb/allpass buffer, filterstore and
- * write index — so a fresh take never inherits the previous take's wash. */
-static void reverb_clear(reverb_t *rv) {
-    for (int i = 0; i < REVERB_NUM_COMBS; i++) {
-        memset(rv->comb_l[i].buf, 0, sizeof(float) * (size_t)rv->comb_l[i].size);
-        memset(rv->comb_r[i].buf, 0, sizeof(float) * (size_t)rv->comb_r[i].size);
-        rv->comb_l[i].idx = rv->comb_r[i].idx = 0;
-        rv->comb_l[i].filterstore = rv->comb_r[i].filterstore = 0.0f;
-    }
-    for (int i = 0; i < REVERB_NUM_ALLPASS; i++) {
-        memset(rv->allpass_l[i].buf, 0, sizeof(float) * (size_t)rv->allpass_l[i].size);
-        memset(rv->allpass_r[i].buf, 0, sizeof(float) * (size_t)rv->allpass_r[i].size);
-        rv->allpass_l[i].idx = rv->allpass_r[i].idx = 0;
-    }
-}
 
 /* Clears everything about the current take. Shared by: IDLE->RECORDING entry,
  * discarding a too-short take, FORGOTTEN->IDLE, and a confirmed erase (both
@@ -1143,7 +1047,6 @@ static void reset_take(loop_engine_t *loop) {
     loop->overdubbing = 0;
     loop->overdub_gain = 0.0f;
     loop->overdub_last_idx = -1;
-    for (int k = 0; k < DARKEN_POLES; k++) loop->darken_lp_l[k] = loop->darken_lp_r[k] = 0.0f;
     loop->medium_last_idx = -1;
     loop->medium_level = 0.0f;
     loop->record_abs_sum = 0.0f;
@@ -1152,7 +1055,6 @@ static void reset_take(loop_engine_t *loop) {
     loop->gate_env = 0.0f;
     loop->warp_drift = loop->warp_drift_target = 0.0f;
     loop->warp_drift_countdown = 0;
-    reverb_clear(&loop->wash);
 }
 
 /* Shared by all three close triggers: a manual master_record press, buffer-
@@ -1231,7 +1133,6 @@ static void close_recording(loop_engine_t *loop) {
     float take_level = loop->record_abs_sum / (float)loop->recorded_length;
     loop->read_head = 0.0;
     loop->memory = 1.0f;
-    for (int k = 0; k < DARKEN_POLES; k++) loop->darken_lp_l[k] = loop->darken_lp_r[k] = 0.0f;
     loop->medium_last_idx = -1;
     loop->medium_level = 0.0f;
     loop->record_abs_sum = 0.0f;
@@ -1254,7 +1155,6 @@ static void close_recording(loop_engine_t *loop) {
     loop->overdubbing = 0;
     loop->overdub_gain = 0.0f;
     loop->overdub_last_idx = -1;
-    reverb_clear(&loop->wash);
     /* Every genuinely NEW take (this function only ever closes a fresh
      * LOOP_RECORDING, never fires for an overdub — see the "overdub" branch
      * of set_param's master_record handler) starts Drive at 0 (auto-chases
@@ -1450,6 +1350,8 @@ static void init_loop(loop_engine_t *loop, uint32_t rng_seed) {
     /* MUST come after the memset: zero here means a read rate of zero and
      * no loop ever plays at all. */
     loop->speed_mul = 1.0f;
+    loop->freq_semis = 0.0f;
+    loop->freq_log_cur = loop->freq_log_target = loop->freq_log_step = 0.0f;
     loop->speed_eff = 1.0f;   /* log_cur/target are 0 from the memset = 1x */
     loop->trim_pct  = TRIM_DEFAULT_PCT;
     /* Age starts FULL (300s, the max — was 180s/3min); Warp/Darken/Hiss/
@@ -1476,11 +1378,10 @@ static void *v2_create_instance(const char *dir, const char *cfg) {
     for (int i = 0; i < NUM_LOOPS; i++) {
         init_loop(&s->loops[i], seeds[i]);
         s->loops[i].buffer = (frame16_t *)calloc((size_t)BUFFER_CAPACITY, sizeof(frame16_t));
-        if (!s->loops[i].buffer || reverb_alloc(&s->loops[i].wash) != 0) {
+        if (!s->loops[i].buffer) {
             free(s->loops[i].buffer); /* no-op if it was the reverb alloc that failed */
             for (int j = 0; j < i; j++) {
                 free(s->loops[j].buffer);
-                reverb_free(&s->loops[j].wash);
             }
             free(s);
             return NULL;
@@ -1492,7 +1393,6 @@ static void *v2_create_instance(const char *dir, const char *cfg) {
     if (fdn_alloc(&s->send_reverb) != 0) {
         for (int j = 0; j < NUM_LOOPS; j++) {
             free(s->loops[j].buffer);
-            reverb_free(&s->loops[j].wash);
         }
         free(s);
         return NULL;
@@ -1507,7 +1407,6 @@ static void *v2_create_instance(const char *dir, const char *cfg) {
         free(s->glitch.buf_r);
         for (int j = 0; j < NUM_LOOPS; j++) {
             free(s->loops[j].buffer);
-            reverb_free(&s->loops[j].wash);
         }
         fdn_free(&s->send_reverb);
         free(s);
@@ -1526,7 +1425,6 @@ static void v2_destroy_instance(void *i) {
     if (!s) return;
     for (int li = 0; li < NUM_LOOPS; li++) {
         free(s->loops[li].buffer);
-        reverb_free(&s->loops[li].wash);
     }
     fdn_free(&s->send_reverb);
     free(s->glitch.buf_l);
@@ -1554,14 +1452,6 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
         loop_engine_t *loop = &s->loops[li];
         if (loop->state != LOOP_LOOPING) continue;
         float age = 1.0f - clampf(loop->memory, 0.0f, 1.0f);
-
-        if (loop->speed_log_cur != loop->speed_log_target) {
-            float move = loop->speed_log_step * (float)frames;
-            float diff = loop->speed_log_target - loop->speed_log_cur;
-            if (fabsf(diff) <= move || move <= 0.0f) loop->speed_log_cur = loop->speed_log_target;
-            else loop->speed_log_cur += (diff > 0.0f) ? move : -move;
-            loop->speed_eff = exp2f(loop->speed_log_cur);
-        }
 
         {
             float t = clampf(loop->tone, -1.0f, 1.0f);
@@ -1616,23 +1506,33 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
             float ga = 1.0f - expf(-(float)frames / (MEDIUM_GAIN_TAU_S * SAMPLE_RATE));
             loop->medium_gain += ga * (want - loop->medium_gain);
         }
-        loop->medium_active = (loop->applied_hf_loss    > 0.001f) ||
-                              (loop->applied_hiss       > 0.001f) ||
-                              (loop->applied_crackle    > 0.001f);
+        loop->medium_active = (loop->applied_hiss    > 0.001f) ||
+                              (loop->applied_crackle > 0.001f);
 
-        float d = flavour_reach(loop->applied_hf_loss, age);
-        if (d <= 0.0001f) {
-            loop->darken_a = 1.0f;          /* exact bypass */
-        } else {
-            float fc = DARKEN_FC_MAX * powf(DARKEN_FC_MIN / DARKEN_FC_MAX, d);
-            loop->darken_a = 1.0f - expf(-2.0f * PI_F * fc / SAMPLE_RATE);
-            if (loop->darken_a > 1.0f) loop->darken_a = 1.0f;
+        /* FREQ — fine varispeed, in semitones, glided separately from the
+         * Speed enum. Both live in log2 space and simply add: Speed picks
+         * the octave, FREQ trims it by ear. Two glides rather than one
+         * because their time constants are opposites — Speed takes five
+         * seconds on purpose (a tape machine settling), and a five-second
+         * FREQ would make tuning against another loop impossible. */
+        {
+            int moved = 0;
+            if (loop->speed_log_cur != loop->speed_log_target) {
+                float move = loop->speed_log_step * (float)frames;
+                float diff = loop->speed_log_target - loop->speed_log_cur;
+                if (fabsf(diff) <= move || move <= 0.0f) loop->speed_log_cur = loop->speed_log_target;
+                else loop->speed_log_cur += (diff > 0.0f) ? move : -move;
+                moved = 1;
+            }
+            if (loop->freq_log_cur != loop->freq_log_target) {
+                float move = loop->freq_log_step * (float)frames;
+                float diff = loop->freq_log_target - loop->freq_log_cur;
+                if (fabsf(diff) <= move || move <= 0.0f) loop->freq_log_cur = loop->freq_log_target;
+                else loop->freq_log_cur += (diff > 0.0f) ? move : -move;
+                moved = 1;
+            }
+            if (moved) loop->speed_eff = exp2f(loop->speed_log_cur + loop->freq_log_cur);
         }
-        loop->darken_wash  = clampf((d - DARKEN_WASH_KNEE) /
-                                    (1.0f - DARKEN_WASH_KNEE), 0.0f, 1.0f);
-        loop->darken_damp1 = d * DARKEN_DAMPING;
-        loop->darken_fb    = REVERB_FEEDBACK_MIN +
-                             d * (REVERB_FEEDBACK_MAX - REVERB_FEEDBACK_MIN);
     }
 
     fdn_update_mod(&s->send_reverb, frames);
@@ -1819,34 +1719,7 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                     }
                 }
 
-                /* 1. Darken — a wash of reverb that gets more present,
-                 * darker, AND longer as the knob rises, replacing the old
-                 * one-pole LP filter (reported 2026-08-25 as "almost can't
-                 * hear it even at maximum"). Scaled-down Schroeder-Moorer
-                 * reverb (REVERB_NUM_COMBS combs + REVERB_NUM_ALLPASS
-                 * allpass per channel) adapted from freeverb.c's proven
-                 * 8+4 — halved because forgetful needs up to NUM_LOOPS of
-                 * these running at once, unlike freeverb's single instance.
-                 * wet-mix amount, damping (darkness) AND feedback (decay
-                 * length — "into a wall of reverb", added 2026-08-25) are
-                 * all driven by the SAME applied_hf_loss chase value, so
-                 * presence/darkness/length build together off one knob.
-                 * wet_amount=0 is an exact raw_l/raw_r passthrough. */
-                /* Darken, one pole PER PASS. Subtle once; after a few
-                 * hundred passes through the write-back below it is the
-                 * dominant thing that has happened to the take. The knob is
-                 * a RATE, which is why the range stops at 1.5 kHz rather
-                 * than the 200 Hz a one-shot filter needed. */
-                float dark_l = raw_l, dark_r = raw_r;
-                if (loop->darken_a < 1.0f) {
-                    for (int k = 0; k < DARKEN_POLES; k++) {
-                        loop->darken_lp_l[k] += loop->darken_a * (dark_l - loop->darken_lp_l[k]);
-                        dark_l = loop->darken_lp_l[k];
-                        loop->darken_lp_r[k] += loop->darken_a * (dark_r - loop->darken_lp_r[k]);
-                        dark_r = loop->darken_lp_r[k];
-                    }
-                }
-                float filt_l = dark_l, filt_r = dark_r;
+                float filt_l = raw_l, filt_r = raw_r;
 
                 /* Drive is gone (2026-08-27). Its tanh stage sat between
                  * Darken and Hiss; the medium's own recursion supplies the
@@ -2015,13 +1888,6 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * it. Crackle is surface noise of THIS playback, not damage
                  * to the medium, so it does not accumulate either. */
                 float out_l = med_l, out_r = med_r;
-                if (loop->darken_wash > 0.0f) {
-                    float rev_l, rev_r;
-                    reverb_process(&loop->wash, (med_l + med_r) * 0.5f,
-                                   loop->darken_fb, loop->darken_damp1, &rev_l, &rev_r);
-                    out_l = med_l + (rev_l - med_l) * loop->darken_wash;
-                    out_r = med_r + (rev_r - med_r) * loop->darken_wash;
-                }
 
                 float crackle_l = out_l + loop->crackle_env * crackle_volume;
                 float crackle_r = out_r + loop->crackle_env * crackle_volume;
@@ -2103,7 +1969,6 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                     } else {
                     }
                     loop->applied_wow     = chase(loop->applied_wow,     loop->wow_ramp.target,     loop->wow_ramp.step);
-                    loop->applied_hf_loss = chase(loop->applied_hf_loss, loop->hf_loss_ramp.target, loop->hf_loss_ramp.step);
                     loop->applied_hiss    = chase(loop->applied_hiss,    loop->hiss_ramp.target,    loop->hiss_ramp.step);
                     loop->applied_crackle = chase(loop->applied_crackle, loop->crackle_ramp.target, loop->crackle_ramp.step);
                 }
@@ -2124,10 +1989,10 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                      * Here the loop has just fallen silent, which is the one
                      * moment a knob snapping back to zero reads as the
                      * consequence of something rather than a glitch. */
-                    loop->wow_ramp = loop->hf_loss_ramp =
-                        loop->hiss_ramp = loop->crackle_ramp = (flavor_ramp_t){0};
-                    loop->applied_wow = loop->applied_hf_loss =
-                        loop->applied_hiss = loop->applied_crackle = 0.0f;
+                    loop->wow_ramp = loop->hiss_ramp =
+                        loop->crackle_ramp = (flavor_ramp_t){0};
+                    loop->applied_wow = loop->applied_hiss =
+                        loop->applied_crackle = 0.0f;
                     /* Everything that belonged to the take goes with it, so
                      * the next one starts from a known place rather than
                      * inheriting the settings that took the last one apart. */
@@ -2136,6 +2001,9 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                     loop->decay_rate = MAX_DECAY_RATE;      /* Age back to 100% */
                     loop->speed_mul  = 1.0f;
                     loop->speed_log_cur = loop->speed_log_target = 0.0f;
+                    loop->freq_semis = 0.0f;
+                    loop->freq_log_cur = loop->freq_log_target = 0.0f;
+                    loop->freq_log_step = 0.0f;
                     loop->speed_log_step = 0.0f;
                     loop->speed_eff  = 1.0f;
                     s->loop_volume[li] = DEFAULT_LOOP_VOLUME;
@@ -2321,8 +2189,16 @@ static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *
         loop->decay_rate = clampf((float)atof(val), MIN_DECAY_RATE, MAX_DECAY_RATE);
     } else if (strcmp(suffix, "wow") == 0) {
         flavor_ramp_set_param(&loop->wow_ramp, &loop->applied_wow, (float)atof(val), loop->memory, loop->decay_rate, loop->frozen);
-    } else if (strcmp(suffix, "hf_loss") == 0) {
-        flavor_ramp_set_param(&loop->hf_loss_ramp, &loop->applied_hf_loss, (float)atof(val), loop->memory, loop->decay_rate, loop->frozen);
+    } else if (strcmp(suffix, "freq") == 0) {
+        /* Fine varispeed, semitones. Folded into the same log2 sum the
+         * Speed enum feeds, but on its own glide — FREQ_GLIDE_SECONDS is
+         * short enough to feel immediate under the hand and long enough
+         * that a detent is not a zipper. Speed's five seconds here would
+         * make tuning against another loop impossible. */
+        loop->freq_semis = clampf((float)atof(val), -FREQ_SEMITONE_RANGE, FREQ_SEMITONE_RANGE);
+        loop->freq_log_target = loop->freq_semis / 12.0f;
+        loop->freq_log_step   = fabsf(loop->freq_log_target - loop->freq_log_cur) /
+                                (FREQ_GLIDE_SECONDS * SAMPLE_RATE);
     } else if (strcmp(suffix, "hiss") == 0) {
         flavor_ramp_set_param(&loop->hiss_ramp, &loop->applied_hiss, (float)atof(val), loop->memory, loop->decay_rate, loop->frozen);
     } else if (strcmp(suffix, "chaos") == 0) {
@@ -2359,7 +2235,7 @@ static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *
 static int loop_get_param(const loop_engine_t *loop, uint64_t total_frames, const char *suffix, char *buf, int len) {
     if (strcmp(suffix, "decay_rate") == 0)  return snprintf(buf, len, "%.1f", loop->decay_rate);
     if (strcmp(suffix, "wow") == 0)         return snprintf(buf, len, "%.3f", loop->wow_ramp.target);
-    if (strcmp(suffix, "hf_loss") == 0)     return snprintf(buf, len, "%.3f", loop->hf_loss_ramp.target);
+    if (strcmp(suffix, "freq") == 0)        return snprintf(buf, len, "%.2f", loop->freq_semis);
     if (strcmp(suffix, "hiss") == 0)        return snprintf(buf, len, "%.3f", loop->hiss_ramp.target);
     if (strcmp(suffix, "chaos") == 0)       return snprintf(buf, len, "%.3f", loop->crackle_ramp.target);
     if (strcmp(suffix, "trim") == 0) {
@@ -2747,13 +2623,21 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                   "\"options\":[\"-\"],\"access\":\"read\"}"
                 ",{\"key\":\"loop%c_wow\",\"name\":\"Warp\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}"
-                ",{\"key\":\"loop%c_hf_loss\",\"name\":\"Darken\",\"type\":\"float\","
-                  "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}"
+                /* FREQ is semitones, NOT a fraction — no "%" unit here,
+                 * so nothing scales it by 100. step 0.1 is ten cents a
+                 * detent, and the host's shift-fine gives a finer one for
+                 * the last of the tuning. */
+                ",{\"key\":\"loop%c_freq\",\"name\":\"FREQ\",\"type\":\"float\","
+                  "\"min\":%.0f,\"max\":%.0f,\"default\":0,\"step\":0.1,"
+                  "\"unit\":\"st\",\"display_format\":\"%%.1f\"}"
                 ",{\"key\":\"loop%c_chaos\",\"name\":\"VINYL\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}"
                 ",{\"key\":\"loop%c_hiss\",\"name\":\"Hiss\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}",
-                c, c, c, c, c, c, c, c);
+                /* FREQ is the 6th %c, and its two %.0f follow it. */
+                c, c, c, c, c, c,
+                (double)-FREQ_SEMITONE_RANGE, (double)FREQ_SEMITONE_RANGE,
+                c, c);
         }
         /* Glitch. The five 0..1 knobs declare a "%" unit, which the UI
          * SCALES BY 100 for display — declaring 0..100 here is what once
@@ -2870,8 +2754,13 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
             char c = LOOP_LETTERS[i];
             pos += snprintf(json + pos, sizeof(json) - pos,
                 ",\"loop%c\":{\"label\":\"Loop %c\",\"knobs\":["
-                  "\"loop%c_decay_rate\",\"loop%c_trim\",\"loop%c_send\",\"loop%c_state\","
-                  "\"loop%c_wow\",\"loop%c_hf_loss\",\"loop%c_chaos\",\"loop%c_hiss\"]}",
+                  /* Space and Darken traded places, then Darken's slot
+                   * became FREQ (2026-08-28). So the top row is now
+                   * Age / Trim / FREQ / ECHO and Space sits with the
+                   * flavours underneath, which is where it belonged: it is
+                   * a send, not a structural property of the take. */
+                  "\"loop%c_decay_rate\",\"loop%c_trim\",\"loop%c_freq\",\"loop%c_state\","
+                  "\"loop%c_wow\",\"loop%c_send\",\"loop%c_chaos\",\"loop%c_hiss\"]}",
                 c, c, c, c, c, c, c, c, c, c);
         }
         /* Glitch last, after the four memories — it is the end of the

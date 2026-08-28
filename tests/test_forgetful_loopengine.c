@@ -280,25 +280,8 @@ static void fill_noise(int16_t *buf, int frames, float amplitude) {
     }
 }
 
-/* Brightness: first-difference energy normalised by level. Falls as a take
- * loses its top end, and is level-independent, so a take that is also
- * fading does not read as darkening. */
-static double measure_brightness(audio_fx_api_v2_t *api, void *inst, int blocks) {
-    int16_t buf[BLOCK_FRAMES * 2];
-    double tot = 0.0, dif = 0.0; long n = 0; int prev = 0, have = 0;
-    for (int b = 0; b < blocks; b++) {
-        fill_silence(buf, BLOCK_FRAMES);
-        api->process_block(inst, buf, BLOCK_FRAMES);
-        for (int i = 0; i < BLOCK_FRAMES * 2; i += 2) {
-            int v = buf[i];
-            tot += (double)v * v; n++;
-            if (have) { double d = (double)v - prev; dif += d * d; }
-            prev = v; have = 1;
-        }
-    }
-    if (n == 0 || tot <= 0.0) return 0.0;
-    return sqrt(dif / (double)n) / sqrt(tot / (double)n);
-}
+/* measure_brightness went with Darken (2026-08-28): it existed to see a
+ * lowpass compounding, and nothing left in the module does that. */
 
 static void run_constant(audio_fx_api_v2_t *api, void *inst, long total_frames, int16_t value) {
     int16_t buf[BLOCK_FRAMES * 2];
@@ -505,7 +488,7 @@ int main(void) {
             check(strstr(hier, probe) != NULL, "test0: ui_hierarchy contains master key");
         }
         static const char *loop_suffixes[] = {
-            "decay_rate", "wow", "hf_loss", "hiss", "send", "chaos", "state", "speed", "tone", "trim"
+            "decay_rate", "wow", "freq", "hiss", "send", "chaos", "state", "speed", "tone", "trim"
         };
         static const char letters[] = { 'A', 'B', 'C', 'D' };
         for (int li = 0; li < 4; li++) {
@@ -886,7 +869,7 @@ int main(void) {
         api->get_param(inst, "loopA_decay_rate", buf, sizeof(buf));
         check(strcmp(buf, "3.0") == 0, "test10: decay_rate clamps to min 3");
 
-        static const char *unit_keys[] = { "wow", "hf_loss", "hiss", "send", "chaos" };
+        static const char *unit_keys[] = { "wow", "hiss", "send", "chaos" };
         for (size_t i = 0; i < sizeof(unit_keys) / sizeof(unit_keys[0]); i++) {
             char key[32];
             snprintf(key, sizeof(key), "loopA_%s", unit_keys[i]);
@@ -1013,7 +996,7 @@ int main(void) {
      * the knob's setting, until the chase has had time to move it). Uses a
      * constant-value recording (not a sine tone) so the recorded content is
      * known exactly, and drives every other chase-scaled stage
-     * (wow/hf_loss/hiss/chaos) to zero — the saturation stage's output is
+     * (wow/hiss/chaos) to zero — the saturation stage's output is
      * directly recoverable from
      * process_block's output samples (dry fed as silence during
      * measurement, so out == mix_dry_wet(0, wet) recovers wet to within
@@ -1037,7 +1020,6 @@ int main(void) {
              * forgetful.c's own per-sample expression bit for bit (no wrap
              * dependency now — see test3). */
             api->set_param(inst, "loopA_wow", "0");
-            api->set_param(inst, "loopA_hf_loss", "0");
             api->set_param(inst, "loopA_hiss", "0");
             api->set_param(inst, "loopA_chaos", "0");
             api->set_param(inst, "loopA_saturation", "0");
@@ -1051,8 +1033,8 @@ int main(void) {
             fill_silence(buf, BLOCK_FRAMES);
             api->process_block(inst, buf, BLOCK_FRAMES);
 
-            /* Expected: filt_l == SAMPLE_F exactly (hf_loss=0 means
-             * applied_hf_loss's target and chase both stay 0, so the Darken
+            /* Expected: filt_l == SAMPLE_F exactly (with Darken gone the
+             * read is unfiltered outright, where it used to rely on the
              * reverb wash's wet_amount is 0 — exact raw passthrough);
              * applied_saturation chases toward saturation's target, which
              * is 0 here, so it stays exactly 0 too regardless of how much
@@ -1102,7 +1084,6 @@ int main(void) {
              * exactly 1.0 and degrade is exactly 0.0, regardless of the
              * Drive knob sitting at its maximum. */
             api->set_param(inst, "loopA_wow", "0");
-            api->set_param(inst, "loopA_hf_loss", "0");
             api->set_param(inst, "loopA_hiss", "0");
             api->set_param(inst, "loopA_chaos", "0");
             api->set_param(inst, "loopA_saturation", "1");
@@ -1225,39 +1206,36 @@ int main(void) {
      * and it was reported from the device as knobs jumping to a huge value
      * on first move. Both halves are pinned here, because the obvious fix
      * for a jump is an over-long glide and that is just as wrong.
+     *
+     * Driven through HISS on a constant take, measured as added noise.
+     * It used to drive Darken and measure brightness; Darken went
+     * 2026-08-28, and with its write removed the test still passed while
+     * exercising no knob at all — so the metric moved to one that is
+     * actually connected to something.
      * --------------------------------------------------------------- */
     {
         void *inst = api->create_instance(".", NULL);
         check(inst != NULL, "test17: create_instance");
         api->set_param(inst, "loopA_decay_rate", "600");
-        api->set_param(inst, "input_routing", "A");
-        press_record(api, inst);
-        int16_t tb[BLOCK_FRAMES * 2];
-        g_noise_state = 4242u;
-        for (int b = 0; b < 200; b++) {
-            fill_noise(tb, BLOCK_FRAMES, 0.30f);
-            api->process_block(inst, tb, BLOCK_FRAMES);
-        }
+        record_full_buffer_loop_a_constant(api, inst, 8000);
         api->set_param(inst, "master_record", "STOP!");
         api->set_param(inst, "loopA_volume", "1");
         api->set_param(inst, "loopA_hiss", "0");
         api->set_param(inst, "loopA_chaos", "0");
         api->set_param(inst, "loopA_wow", "0");
-        api->set_param(inst, "loopA_saturation", "0");
         run_silence(api, inst, BLOCK_FRAMES * 8);     /* clear the splice fade */
 
-        double b_before = measure_brightness(api, inst, 2);
-        api->set_param(inst, "loopA_hf_loss", "1");
-        double b_at_write = measure_brightness(api, inst, 2);   /* ~5ms later */
-        run_silence(api, inst, (long)(SAMPLE_RATE / 5));        /* 200ms */
-        double b_settled = measure_brightness(api, inst, 2);
+        double n_before = measure_noise(api, inst, 4);
+        api->set_param(inst, "loopA_hiss", "0.9");
+        double n_at_write = measure_noise(api, inst, 2);   /* ~6ms later */
+        run_silence(api, inst, (long)(SAMPLE_RATE / 5));   /* 200ms */
+        double n_settled = measure_noise(api, inst, 4);
 
-        check(b_at_write > b_before * 0.8,
-              "test17: the very next block after the write is still close to "
-              "undarkened — the knob does not snap");
-        check(b_settled < b_at_write * 0.6,
-              "test17: and 200ms later it has plainly arrived — the slew is "
-              "smoothing, not a glide across the take's remaining life");
+        check(n_settled > n_before * 3.0,
+              "test17: 200ms after the write the hiss has plainly arrived");
+        check(n_at_write < n_before + (n_settled - n_before) * 0.35,
+              "test17: but the very next blocks are still near the un-hissed "
+              "level — the knob slews, it does not snap");
         api->destroy_instance(inst);
     }
 
@@ -1278,7 +1256,6 @@ int main(void) {
         api->set_param(inst, "loopA_decay_rate", "300");
         api->set_param(inst, "loopA_hiss", "0");
         api->set_param(inst, "loopA_chaos", "0");
-        api->set_param(inst, "loopA_hf_loss", "0");
         api->set_param(inst, "loopA_saturation", "0");
         api->set_param(inst, "loopA_wow", "0");
 
@@ -1348,7 +1325,6 @@ int main(void) {
         api->set_param(inst, "loopA_volume", "1");
         api->set_param(inst, "loopA_chaos", "0");
         api->set_param(inst, "loopA_wow", "0");
-        api->set_param(inst, "loopA_hf_loss", "0");
         api->set_param(inst, "loopA_saturation", "0");
         api->set_param(inst, "loopA_hiss", "1");
 
@@ -1361,46 +1337,10 @@ int main(void) {
         api->destroy_instance(inst);
     }
 
-    /* ---------------------------------------------------------------
-     * test21: Darken COMPOUNDS. It is one pole per pass now, so a single
-     * pass is subtle by design and the darkening is what a few hundred
-     * passes of it add up to. Measured as brightness — first-difference
-     * energy over level — shortly after the knob is turned, and again a
-     * long time later, on a take whose Age is far too long to explain the
-     * difference.
-     * --------------------------------------------------------------- */
-    {
-        void *inst = api->create_instance(".", NULL);
-        check(inst != NULL, "test21: create_instance");
-        api->set_param(inst, "loopA_decay_rate", "600");
-        api->set_param(inst, "input_routing", "A");
-        press_record(api, inst);
-        int16_t tb[BLOCK_FRAMES * 2];
-        g_noise_state = 22222u;
-        for (int b = 0; b < 344; b++) {          /* ~1s loop */
-            fill_noise(tb, BLOCK_FRAMES, 0.30f);
-            api->process_block(inst, tb, BLOCK_FRAMES);
-        }
-        api->set_param(inst, "master_record", "STOP!");
-        api->set_param(inst, "loopA_volume", "1");
-        api->set_param(inst, "loopA_hiss", "0");
-        api->set_param(inst, "loopA_chaos", "0");
-        api->set_param(inst, "loopA_wow", "0");
-        api->set_param(inst, "loopA_saturation", "0");
-        api->set_param(inst, "loopA_hf_loss", "0.6");
-
-        double b_early = measure_brightness(api, inst, 344);
-        run_silence(api, inst, (long)SAMPLE_RATE * 45);
-        double b_late  = measure_brightness(api, inst, 344);
-
-        check(b_early > 0.0, "test21: the take has measurable brightness to start");
-        check(b_late < b_early * 0.35,
-              "test21: Darken compounds — the same knob, untouched, leaves "
-              "the take far duller 45s later (brightness ~0.94 -> ~0.07), "
-              "because each pass filters what the last pass already "
-              "filtered. One pass of it is deliberately subtle.");
-        api->destroy_instance(inst);
-    }
+    /* test21 (Darken COMPOUNDS) removed 2026-08-28 with Darken itself.
+     * The per-pass lowpass, the reverb wash and the loopX_hf_loss key are
+     * all gone; the knob position is FREQ now. Per-pass compounding is
+     * still covered by test19 (recursive medium) and test22 (VINYL). */
 
     /* ---------------------------------------------------------------
      * test23: VINYL measurably alters the take, and Freeze stops it.
@@ -1437,7 +1377,6 @@ int main(void) {
             api->set_param(inst, "master_record", "STOP!");
             api->set_param(inst, "loopA_volume", "1");
             api->set_param(inst, "loopA_hiss", "0");
-            api->set_param(inst, "loopA_hf_loss", "0");
             api->set_param(inst, "loopA_wow", "0");
             api->set_param(inst, "loopA_send", "0");
             api->set_param(inst, "loopA_chaos", (pass == 1 || pass == 3) ? "1" : "0");
@@ -1497,7 +1436,6 @@ int main(void) {
         }
         api->set_param(inst, "master_record", "STOP!");
         api->set_param(inst, "loopA_volume", "1");
-        api->set_param(inst, "loopA_hf_loss", "0.7");
         api->set_param(inst, "loopA_hiss", "0.6");
         api->set_param(inst, "loopA_chaos", "0.6");
         api->set_param(inst, "loopA_saturation", "0.4");
@@ -1557,7 +1495,6 @@ int main(void) {
         api->set_param(inst, "loopA_hiss", "0");
         api->set_param(inst, "loopA_chaos", "0");
         api->set_param(inst, "loopA_wow", "0");
-        api->set_param(inst, "loopA_hf_loss", "0");
         api->set_param(inst, "loopA_saturation", "0");
 
         int worst = 0, prev = 0, have = 0;
@@ -1605,8 +1542,11 @@ int main(void) {
          * level's 32 knobs into four pages inside it. */
         check(strstr(js, "\"level\":\"loopA\",\"label\":\"Loop A\"") != NULL,
               "test26: each loop is its own named section");
-        check(strstr(js, "\"loopA_decay_rate\",\"loopA_trim\",\"loopA_send\",\"loopA_state\"") != NULL,
-              "test26: a loop page's top row is Age, Trim, Space, ECHO");
+        check(strstr(js, "\"loopA_decay_rate\",\"loopA_trim\",\"loopA_freq\",\"loopA_state\"") != NULL,
+              "test26: a loop page's top row is Age, Trim, FREQ, ECHO");
+        check(strstr(js, "\"loopA_wow\",\"loopA_send\",\"loopA_chaos\",\"loopA_hiss\"") != NULL,
+              "test26: and Space moved down to the flavour row, into the slot "
+              "Darken used to hold");
         /* 32 knobs must land 8 per page with one loop each, or a page
          * straddles two memories and every label lies. */
 
@@ -1645,7 +1585,6 @@ int main(void) {
         api->set_param(inst, "loopA_hiss", "0");
         api->set_param(inst, "loopA_chaos", "0");
         api->set_param(inst, "loopA_wow", "0");
-        api->set_param(inst, "loopA_hf_loss", "0");
         api->set_param(inst, "loopA_saturation", "0");
         api->set_param(inst, "loopA_volume", "1");
         api->set_param(inst, "loopA_send", "1");
@@ -1702,7 +1641,6 @@ int main(void) {
         api->set_param(inst, "loopA_hiss", "0");
         api->set_param(inst, "loopA_chaos", "0");
         api->set_param(inst, "loopA_wow", "0");
-        api->set_param(inst, "loopA_hf_loss", "0");
         api->set_param(inst, "loopA_send", "0");
 
         double at_rest = measure_pitch(api, inst, 40);
@@ -1752,7 +1690,6 @@ int main(void) {
             api->set_param(inst, "loopA_hiss", "0");
             api->set_param(inst, "loopA_chaos", "0");
             api->set_param(inst, "loopA_wow", "0");
-            api->set_param(inst, "loopA_hf_loss", "0");
             api->set_param(inst, "loopA_send", "0");
             char tv[16]; snprintf(tv, sizeof(tv), "%.2f", tones[k] / 100.0);
             api->set_param(inst, "loopA_tone", tv);
@@ -1807,7 +1744,6 @@ int main(void) {
         }
         api->set_param(inst, "master_record", "STOP!");
         api->set_param(inst, "loopA_wow", "0.7");
-        api->set_param(inst, "loopA_hf_loss", "0.6");
         api->set_param(inst, "loopA_chaos", "0.8");
         api->set_param(inst, "loopA_hiss", "0.5");
         api->set_param(inst, "loopA_trim", "0.2");
@@ -1822,7 +1758,7 @@ int main(void) {
         check(atof(v) > 0.5, "test30: the knob holds while the take is alive");
 
         run_silence(api, inst, (long)SAMPLE_RATE * 8);   /* well past its 6s */
-        static const char *flav[] = { "wow", "hf_loss", "chaos", "hiss" };
+        static const char *flav[] = { "wow", "chaos", "hiss" };
         for (int i = 0; i < 4; i++) {
             char key[32];
             snprintf(key, sizeof(key), "loopA_%s", flav[i]);
@@ -1884,7 +1820,6 @@ int main(void) {
                 api->set_param(inst, "loopA_hiss", "0");
                 api->set_param(inst, "loopA_chaos", "0");
                 api->set_param(inst, "loopA_wow", "0");
-                api->set_param(inst, "loopA_hf_loss", "0");
                 api->set_param(inst, "loopA_send", "0");
                 api->set_param(inst, "loopA_trim", trims[pass][k]);
 
@@ -1950,7 +1885,6 @@ int main(void) {
             api->set_param(inst, "loopA_hiss", "0");
             api->set_param(inst, "loopA_chaos", "0");
             api->set_param(inst, "loopA_wow", "0");
-            api->set_param(inst, "loopA_hf_loss", "0");
             api->set_param(inst, "loopA_send", "0");
             api->set_param(inst, "loopA_trim", trims[k]);
 
@@ -2250,6 +2184,67 @@ int main(void) {
         }
     }
 
+
+    /* ---- Test 37: FREQ — fine varispeed, replacing Darken's slot.
+     *
+     * Semitones, not a fraction: -12..+12, no "%" unit, so nothing scales
+     * it by 100 the way loopX_volume's 0..1.5 becomes 0..150%.
+     *
+     * It folds into the SAME log2 sum the Speed enum feeds, on its own
+     * glide. Both halves are pinned: the ratio has to be right across the
+     * range, and it has to compose with Speed rather than replace it —
+     * +7st at 2x is very nearly a perfect twelfth, not a fifth. ---- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        char b[64];
+
+        api->get_param(inst, "loopA_freq", b, sizeof(b));
+        check(strcmp(b, "0.00") == 0, "test37: FREQ defaults to no shift");
+        api->set_param(inst, "loopA_freq", "99");
+        api->get_param(inst, "loopA_freq", b, sizeof(b));
+        check(atof(b) <= 12.0, "test37: FREQ clamps at +12 semitones");
+        api->set_param(inst, "loopA_freq", "-99");
+        api->get_param(inst, "loopA_freq", b, sizeof(b));
+        check(atof(b) >= -12.0, "test37: FREQ clamps at -12 semitones");
+
+        /* Darken is gone, key and all — not merely unhooked from the page.
+         * A stale key that still answers is how a removed control keeps
+         * being writable from a patch nobody edited. */
+        int n = api->get_param(inst, "loopA_hf_loss", b, sizeof(b));
+        check(n == 0 && b[0] == '\0',
+              "test37: loopA_hf_loss is ABSENT — Darken is gone, not hidden");
+        api->destroy_instance(inst);
+
+        static const struct { const char *semis; const char *speed; double ratio; }
+        cases[] = {
+            { "0",   "1x", 1.0        },
+            { "-12", "1x", 0.5        },
+            { "7",   "1x", 1.4983     },
+            { "12",  "1x", 2.0        },
+            { "7",   "2x", 2.9966     },   /* composes with Speed, not replaces */
+        };
+        double base = 0.0;
+        for (size_t k = 0; k < sizeof(cases)/sizeof(cases[0]); k++) {
+            void *in2 = api->create_instance(".", NULL);
+            float phase = 0.0f;
+            record_full_buffer_loop_a(api, in2, &phase);
+            api->set_param(in2, "loopA_decay_rate", "300");
+            api->set_param(in2, "loopA_speed", cases[k].speed);
+            api->set_param(in2, "loopA_freq", cases[k].semis);
+            /* long settle: Speed glides for SPEED_GLIDE_SECONDS (5s), and
+             * measuring inside that glide reads a moving pitch, which is
+             * exactly the mistake that made the 2x case look broken. */
+            run_silence(api, in2, 8L * SAMPLE_RATE);
+            double hz = measure_pitch(api, in2, 200);
+            api->destroy_instance(in2);
+            if (k == 0) { base = hz; check(base > 0.0, "test37: baseline pitch measurable"); continue; }
+            double got = hz / base;
+            check(got > cases[k].ratio * 0.97 && got < cases[k].ratio * 1.03,
+                  "test37: FREQ shifts by the semitones it says, and composes "
+                  "with the Speed enum");
+        }
+    }
+
     /* The PASS line used to print unconditionally and the runner grepped
      * for it, so a suite with real failures still read as green — the same
      * class of blind pass signal as the earlier `grep -c "^FAIL"` that
@@ -2267,6 +2262,6 @@ int main(void) {
            "medium, Darken compounding, VINYL gate, level regulator, splice "
            "fade, Sound page, send reverb, speed glide, Tone filter, Trim + "
            "join crossfade, reset on take death, Glitch page, absent-key "
-           "contract, Tone ordering)\n");
+           "contract, Tone ordering, FREQ)\n");
     return 0;
 }
