@@ -89,23 +89,6 @@ p+p{margin-top:13px}
 .frow .fd{font-size:15.5px;color:var(--ink)}
 .frow .fd b{color:var(--accent)}
 
-/* ---------- ramp demo (screen-styled) ---------- */
-.rampbox{margin-top:24px}
-.ramp-buttons{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
-.ramp-buttons button{font-family:var(--disp);font-size:11px;background:var(--panel2);color:var(--ink);
-  border:1px solid var(--line);border-radius:3px;padding:7px 12px;cursor:pointer}
-.ramp-buttons button:hover{border-color:var(--accent)}
-.ramp-buttons button.frz.on{background:var(--accent-dim);border-color:var(--accent);color:var(--ink-hi)}
-.ramp-screen{background:#000;border:1px solid var(--line);border-radius:3px;padding:12px}
-.ramp-track{position:relative;height:14px;background:#000}
-.ramp-track::before{content:"";position:absolute;inset:0;background:
-  repeating-linear-gradient(90deg,transparent 0 7px,var(--dim2) 7px 8px)}
-.ramp-fill{position:absolute;inset:0;width:0%;background:var(--accent)}
-.ramp-target{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--ink-hi)}
-.ramp-cap{display:flex;justify-content:space-between;margin-top:6px;font-family:var(--disp);font-size:10px;color:var(--dim)}
-.ramp-msg{margin-top:14px;font-size:15px;color:var(--ink)}
-.ramp-msg b{color:var(--accent)}
-
 /* ---------- spec ---------- */
 dl.spec{margin-top:20px;border-top:1px solid var(--line)}
 dl.spec div{display:grid;grid-template-columns:200px 1fr;gap:16px;padding:11px 0;border-bottom:1px solid var(--line2)}
@@ -131,9 +114,10 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
 <nav><div class="wrap">
   <a class="logo" href="#top">FORGETFUL</a>
   <a class="s" href="#what">What it is</a>
-  <a class="s" href="#main-page">Main page</a>
-  <a class="s" href="#loop-page">Memory page</a>
-  <a class="s" href="#ramps">How knobs move</a>
+  <a class="s" href="#main-page">Main</a>
+  <a class="s" href="#sound-page">Sound</a>
+  <a class="s" href="#loop-page">Loop pages</a>
+  <a class="s" href="#ramps">How it wears</a>
   <a class="s" href="#ideas">Ideas</a>
 </div></nav>
 
@@ -145,7 +129,7 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
   <p class="lede">One live input, sent by hand into whichever of four tape
     memories you choose. The moment you move on, it starts <b>forgetting
     itself</b> — until it's silent, and ready to hold something new.</p>
-  <p class="chips">forgetful <b>v0.2.0</b> · audio_fx · requires <b>schwung</b></p>
+  <p class="chips">forgetful <b>v0.3.0</b> · audio_fx · requires <b>schwung</b></p>
 </header>
 
 <section id="what">
@@ -155,15 +139,21 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
     <div>
       <p>Forgetful holds four independent memories, A through D. Each one
       can record a loop from whatever's feeding into the module, then plays
-      that loop back on its own — fading a little more with every repeat,
+      it back on its own — coming apart a little more with every pass,
       until it's silent and empty again.</p>
+      <p>The wearing-out is real, not a fade laid over the top. Each time
+      round, what comes off the tape is written back onto it, so the next
+      pass reads the damaged version and damages it again. Set a knob and
+      leave it: the loop keeps going further, because the damage compounds
+      on itself.</p>
     </div>
     <div>
-      <p>The controls are split across two kinds of page: one <b>Main</b>
-      page for choosing which memory is listening right now and mixing all
-      four together, and four <b>memory pages</b> — one each for A, B, C,
-      D — for shaping exactly how that memory falls apart over time.</p>
-      <p class="seq"><b>Send</b> → <b>Rec</b> → <b>plays &amp; ages</b> → <b>silent</b></p>
+      <p>The controls sit on six pages. <b>Main</b> is where you choose
+      which memory is listening and set how fast each plays. <b>Sound</b>
+      is level and tone for all four at once. Then one page each for
+      <b>Loop A</b> through <b>Loop D</b>, where you shape how that memory
+      falls apart.</p>
+      <p class="seq"><b>Send</b> → <b>Rec</b> → <b>plays &amp; comes apart</b> → <b>silent</b></p>
     </div>
   </div>
 </section>
@@ -185,92 +175,102 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
 
 <!-- ============================ MAIN PAGE ============================ -->
 <section id="main-page">
-  <div class="eyebrow">Screen — page 0</div>
-  <h2 class="sh">The Main page</h2>
-  <p>This is the page you land on. It's where you choose which memory is
-  listening, see all four at a glance, and mix them together. Click a
-  control on the screen below to see it light up; the full walkthrough
-  follows underneath.</p>
+  <div class="eyebrow">Screen — page 1 of 6</div>
+  <h2 class="sh">Main</h2>
+  <p>The page you land on: which memory is listening, what all four are
+  doing, and how fast each one runs. Click a control to see what it does.</p>
   <div class="device" id="mainDevice"></div>
 
   <div class="flist">
     <div class="frow"><div><div class="fn">Send</div></div>
-      <div class="fd">Turn it to A, B, C, or D. Whichever one it's pointed at is the only memory that can hear the live input right now — the other three keep playing, aging, or sitting empty exactly as they were, no matter where Send points.</div></div>
+      <div class="fd">Points the live input at A, B, C or D. Only that one can hear you; the other three keep playing, aging or sitting empty exactly as they were.</div></div>
     <div class="frow"><div><div class="fn">ECHO</div></div>
-      <div class="fd">A read-only glance at all four memories at once, one character per memory in A B C D order: a dash for empty, <b>R</b> while recording, <b>O</b> while overdubbing, <b>F</b> while frozen, or a digit for roughly how much is left before it fades to nothing. <code>7R-1</code> reads as A around 70–79%, B recording, C empty, D around 10–19%.</div></div>
+      <div class="fd">All four memories at once, one character each in A B C D order, arranged two over two. A dash for empty, <b>R</b> recording, <b>O</b> overdubbing, <b>F</b> frozen, or a digit for roughly how much is left. <code>9F</code> over <code>-1</code> reads as A near full, B frozen, C empty, D nearly gone.</div></div>
     <div class="frow"><div><div class="fn">REC</div></div>
-      <div class="fd">One knob, four stages, each press moving to the next: <b>press once</b> from empty to start recording; <b>press again</b> to stop — the memory starts playing back immediately and begins fading; <b>press again while it's playing</b> to start overdubbing — whatever you play now gets layered onto what's already there, without erasing it or resetting how far along it's faded; <b>press once more</b> to stop overdubbing and return to plain playback. The knob always tells you what the next press will do, not what's happening right now.</div></div>
+      <div class="fd">One knob, four stages, each press moving to the next. <b>Press</b> to start recording; <b>press again</b> to stop, and it begins playing and wearing out; <b>press while it plays</b> to overdub, layering onto what's there without erasing it or resetting how far it has gone; <b>press again</b> to stop overdubbing. The readout names what the <i>next</i> press does.</div></div>
     <div class="frow"><div><div class="fn">Freeze</div></div>
-      <div class="fd">Pauses that memory's fading completely — it keeps looping exactly as degraded as it already is, for as long as you like. The four flavor knobs on that memory's own page keep working normally while it's frozen, so you can dial in a character and hold it in place. Press again to let it carry on fading from there.</div></div>
-    <div class="frow"><div><div class="fn">The mixer</div></div>
-      <div class="fd">Four more knobs, one per memory, set how loud each one sits in the final mix — independent of Send. D can be turned all the way down while it's still recording, or A can be brought back up after it's mostly faded away.</div></div>
+      <div class="fd">Stops that memory wearing out — it keeps looping exactly as ruined as it is, indefinitely. Nothing is written back onto the tape while it's frozen, so it holds. Press again to let it carry on. The readout names what it's doing now: <b>FROZEN</b> or <b>AGING</b>.</div></div>
+    <div class="frow"><div><div class="fn">Speed</div></div>
+      <div class="fd">Four knobs, one per memory: <b>1/4</b>, <b>1/2</b>, <b>1x</b>, <b>2x</b>. 1x is home; one detent left is half speed, two is a quarter, one right is double. Changes glide over <b>five seconds</b> rather than jumping. A slowed memory also comes apart more slowly, because the damage happens per pass, not per second — half speed is also a way to preserve one.</div></div>
+  </div>
+</section>
+
+<!-- ============================ SOUND PAGE ============================ -->
+<section id="sound-page">
+  <div class="eyebrow">Screen — page 2 of 6</div>
+  <h2 class="sh">Sound</h2>
+  <p>Level over tone, four columns — one per memory. How loud it is, and
+  what's left of it.</p>
+  <div class="device" id="soundDevice"></div>
+
+  <div class="flist">
+    <div class="frow"><div><div class="fn">Level</div></div>
+      <div class="fd">How loud each memory sits in the mix, independent of Send. Goes to <b>150%</b>, so a memory can be pushed as well as pulled back — useful once one has worn down to almost nothing and you want it back. Defaults to 80%.</div></div>
+    <div class="frow"><div><div class="fn">Tone</div></div>
+      <div class="fd">A DJ filter, centred. Turn left and it low-passes, sweeping the top away; turn right and it high-passes, sweeping the bottom away. The middle is a true bypass. It's a performance control, not damage: sweeping it changes what you hear without printing anything onto the tape, so you can take the top off and put it back.</div></div>
   </div>
 </section>
 
 <!-- ============================ LOOP PAGE ============================ -->
 <section id="loop-page">
-  <div class="eyebrow">Screen — pages 1–4</div>
-  <h2 class="sh">A memory page</h2>
-  <p>Pages 1 through 4 — one per memory — share this exact layout. This is
-  where you shape how that one memory ages: how it sounds, how long it
-  takes, and how to let it go.</p>
+  <div class="eyebrow">Screen — pages 3–6</div>
+  <h2 class="sh">Loop A, B, C, D</h2>
+  <p>One page per memory, all the same layout. This is where you decide how
+  that memory comes apart, and how much of it plays.</p>
   <div class="device" id="loopDevice"></div>
 
   <div class="flist">
     <div class="frow"><div><div class="fn">Age</div></div>
-      <div class="fd">How long, in seconds, this memory takes to fade to silence once it starts playing back. It also sets the pace for the four flavor knobs below — see <a href="#ramps">how the knobs actually move</a>.</div></div>
-    <div class="frow"><div><div class="fn">Drive</div></div>
-      <div class="fd">Tape warmth and saturation. The one knob on this page that isn't turn-based like the others — it eases toward whatever you set it to continuously, rather than snapping or gliding in stages.</div></div>
+      <div class="fd">How long, in seconds, this memory takes to go from full to gone — 3 seconds to 5 minutes. Everything else is a rate of damage; this is the clock they run against.</div></div>
+    <div class="frow"><div><div class="fn">Trim</div></div>
+      <div class="fd">Picks how much of the recording plays. Centre plays all of it. Turn <b>left</b> and the loop starts later, cutting the front; turn <b>right</b> and it ends earlier, cutting the back. Either way it gets shorter. Nothing is erased — turn back and it returns. The part you've cut off also stops wearing out, since it isn't passing the head, so bring it back later and it sounds as it did when you cut it.</div></div>
+    <div class="frow"><div><div class="fn">Space</div></div>
+      <div class="fd">How much of this memory goes into the shared reverb at the end of the chain — a long, dense tail of about six and a half seconds. Post-fader, so turning the memory down turns its send down too. The reverb keeps ringing after you pull the send back.</div></div>
     <div class="frow"><div><div class="fn">ECHO</div></div>
-      <div class="fd">This one memory's own state, as a single character — the same codes as the Main page's ECHO, just for this memory alone.</div></div>
-    <div class="frow"><div><div class="fn">Erase</div></div>
-      <div class="fd">Clears this memory. Empty or recording, it's instant. Playing back, it fades out over <b>10 seconds</b> instead of cutting — even while frozen — and clears once the fade finishes. Press Rec on it again before that happens and it's yours again immediately, mid-fade.</div></div>
+      <div class="fd">This memory's own state as a single character — the same codes as Main's ECHO, for this one alone.</div></div>
     <div class="frow"><div><div class="fn">Warp</div></div>
-      <div class="fd">Slow, uneven pitch wobble on the read head — a worn tape transport losing its grip.</div></div>
+      <div class="fd">A transport that can't hold its speed: a slow sag, a faster flutter, and a drift that wanders at random so it never settles into a pattern. Gentle settings sag; the top of the travel is a machine coming apart.</div></div>
     <div class="frow"><div><div class="fn">Darken</div></div>
-      <div class="fd">Feeds the memory into a small reverb. Turn it up and the wash gets more present, darker, and longer together — at the top, a wall of reverb, not just a filtered signal.</div></div>
+      <div class="fd">The top end going, a little more on every pass. One turn is subtle by design — this is a <i>rate</i>, and what you hear is a few hundred passes of it adding up. Past about halfway a dark reverb wash blends in on top, so the far end is a wall rather than just a dull loop.</div></div>
     <div class="frow"><div><div class="fn">VINYL</div></div>
-      <div class="fd">Click-and-pop surface crackle. The bottom half of the knob only raises how loud it is; past halfway it also starts getting busier.</div></div>
+      <div class="fd">The medium losing material. A gate that takes the <b>quiet</b> parts first, so what survives is peaks surfacing out of silence rather than holes punched at random — and because it's written back onto the tape, what goes is gone. It bites harder the older the take gets. Freeze stops it.</div></div>
     <div class="frow"><div><div class="fn">Hiss</div></div>
-      <div class="fd">Brightened, high-passed noise — tape hiss, not static. Kept quiet on purpose: a texture sitting underneath, not a wall of noise.</div></div>
+      <div class="fd">Noise printed onto the tape on every pass, so it accumulates: inaudible on a fresh take, and by the end the loudest thing left. That's the arc — the music disappears and the noise floor doesn't.</div></div>
   </div>
 </section>
 
-<!-- ============================ RAMPS ============================ -->
+<!-- ============================ HOW IT WEARS ============================ -->
 <section id="ramps">
-  <div class="eyebrow">How the knobs actually move</div>
-  <h2 class="sh">First touch sets it. Every touch after glides.</h2>
+  <div class="eyebrow">How it wears out</div>
+  <h2 class="sh">The knobs set a rate, not a sound</h2>
   <div class="cols">
     <div>
-      <p>Warp, Darken, Hiss and VINYL don't behave like an ordinary knob.
-      The <b>first</b> time you turn one since a take closed, it jumps
-      straight to what you set.</p>
-      <p><b>Every turn after that</b> glides instead — from wherever it
-      sits now, toward the new value, timed to arrive exactly when the
-      memory itself runs out of time. However much of Age is left, not the
-      full Age setting.</p>
+      <p>Warp, Darken, VINYL and Hiss aren't effects laid over the top.
+      Each pass, what comes off the tape is written back onto it, so the
+      next pass reads the damaged version — the same gentle filter applied
+      three hundred times, the same faint noise printed three hundred
+      times.</p>
+      <p>So a knob sets <b>how fast this falls apart</b>. Turn one a little
+      and nothing dramatic happens immediately; leave it and the loop keeps
+      going further on its own. Turn one a lot and it's gone in under a
+      minute.</p>
     </div>
     <div>
-      <p>Try it: the first click below sets the value cold. Every click
-      after glides. Freeze turns every glide into a short, fixed 150ms
-      window — live, knob-following control, for sculpting a memory's
-      character by hand while its aging is held still.</p>
+      <p>The knobs themselves move like knobs — turn one and it slews
+      smoothly to where you put it, no jump, no long glide. Nothing waits
+      for a take to end.</p>
+      <p>Because the tape is really being rewritten, it can't be undone.
+      Turn Darken up, hear it, turn it back down — the loop stays as dark
+      as it got. The only thing that restores a memory is recording a new
+      one, and when a memory finally goes silent every knob on it returns
+      to its default so the next take starts clean.</p>
+      <p><b>Freeze stops all of it.</b> Nothing is written back while a
+      memory is frozen: it holds exactly as ruined as it was.</p>
     </div>
   </div>
-  <div class="rampbox">
-    <div class="ramp-buttons">
-      <button data-v="20">Turn → 20%</button>
-      <button data-v="65">Turn → 65%</button>
-      <button data-v="90">Turn → 90%</button>
-      <button data-v="0">Turn → 0%</button>
-      <button class="frz" id="rFreeze">Frozen: off</button>
-    </div>
-    <div class="ramp-screen">
-      <div class="ramp-track"><div class="ramp-fill" id="rFill"></div><div class="ramp-target" id="rTarget" style="left:0%"></div></div>
-      <div class="ramp-cap"><span>0%</span><span id="rApplied">applied 0%</span><span>100%</span></div>
-    </div>
-    <p class="ramp-msg" id="rMsg">Untouched — nothing has been turned yet.</p>
-  </div>
+  <div class="note"><b>Two of the eight are not damage.</b> Trim chooses
+  which part plays, and Tone on the Sound page filters what you hear.
+  Both are reversible — turn them back and what they hid comes back.</div>
 </section>
 
 <!-- ============================ IDEAS ============================ -->
@@ -296,7 +296,7 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
 </section>
 
 <footer>
-  FORGETFUL · v0.2.0 · audio_fx · by <a href="https://github.com/kliegsablaze">kliegs</a><br>
+  FORGETFUL · v0.3.0 · audio_fx · by <a href="https://github.com/kliegsablaze">kliegs</a><br>
   Built on <a href="https://github.com/charlesvestal/schwung">schwung</a> by Charles Vestal, for the Ableton Move.
 </footer>
 
@@ -573,92 +573,79 @@ function buildDevice(mount, page){
   render();
 }
 
-/* ---------------- Main page ---------------- */
+/* ---------------- Main ---------------- */
 buildDevice(document.getElementById("mainDevice"),{
-  id:"main", title:"Main", pageIndex:0, pageCount:5,
-  hint:"Send, ECHO, REC and Freeze sit on the top row; the four memory volumes underneath.",
+  id:"main", title:"Main", pageIndex:0, pageCount:6,
+  hint:"Send, ECHO, REC and Freeze on top; the four playback speeds underneath.",
   cells:[
     {label:"Send",kind:"box",idx:0,values:["A","B","C","D"],
       desc:v=>"Send — knob 1. Points the live input at memory "+v+". Only "+v+" can hear it right now."},
-    {label:"ECHO",kind:"box2",idx:0,values:[["--","--"],["7R","--"],["7R","-1"],["FR","-1"]],
-      desc:v=>"ECHO — knob 2, read-only. One character per memory, A B C D in order: "+v.join("")+" here."},
+    {label:"ECHO",kind:"box2",idx:0,values:[["--","--"],["7R","--"],["9F","-1"],["FR","O1"]],
+      desc:v=>"ECHO — knob 2, read-only. All four memories, A B over C D: "+v.join(" / ")+" here."},
     {label:"REC",kind:"trigger",idx:0,values:["REC","STOP","DUB","PLAY"],
-      desc:v=>"REC — knob 3. Names what the next press does. Reads "+v+" right now."},
-    {label:"Freeze",kind:"trigger",idx:0,values:["FREEZE","AGING"],
-      desc:v=>"Freeze — knob 4. "+(v==="FREEZE"?"Next press freezes the routed memory.":"Next press resumes its aging.")},
-    {label:"A",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.8},{t:"100%",f:1}],
-      desc:v=>"A — knob 5. Memory A's volume in the mix, "+v.t+". Defaults to 80%."},
-    {label:"B",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.8},{t:"45%",f:.45}],
-      desc:v=>"B — knob 6. Memory B's volume in the mix, "+v.t+"."},
-    {label:"C",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.8},{t:"60%",f:.6}],
-      desc:v=>"C — knob 7. Memory C's volume in the mix, "+v.t+"."},
-    {label:"D",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.8},{t:"20%",f:.2}],
-      desc:v=>"D — knob 8. Memory D's volume in the mix, "+v.t+"."},
+      desc:v=>"REC — knob 3. Names what the next press does. Reads "+v+" now."},
+    {label:"Freeze",kind:"trigger",idx:0,values:["AGING","FROZEN"],
+      desc:v=>"Freeze — knob 4. "+(v==="FROZEN"?"This memory is held; nothing is being written onto its tape.":"This memory is wearing out normally.")},
+    {label:"A",kind:"box",idx:2,values:["1/4","1/2","1x","2x"],
+      desc:v=>"Speed A — knob 5. Memory A plays at "+v+". Changes glide over five seconds."},
+    {label:"B",kind:"box",idx:2,values:["1/4","1/2","1x","2x"],
+      desc:v=>"Speed B — knob 6. Memory B plays at "+v+"; slower also means it comes apart slower."},
+    {label:"C",kind:"box",idx:2,values:["1/4","1/2","1x","2x"],
+      desc:v=>"Speed C — knob 7. Memory C plays at "+v+"."},
+    {label:"D",kind:"box",idx:2,values:["1/4","1/2","1x","2x"],
+      desc:v=>"Speed D — knob 8. Memory D plays at "+v+"."},
   ]
 });
 
-/* ---------------- Loop page ---------------- */
-buildDevice(document.getElementById("loopDevice"),{
-  id:"loop", title:"A", pageIndex:1, pageCount:5,
-  hint:"Age and Drive sit up top with ECHO and Erase; Warp, Darken, VINYL and Hiss fill the bottom row.",
+/* ---------------- Sound ---------------- */
+buildDevice(document.getElementById("soundDevice"),{
+  id:"sound", title:"Sound", pageIndex:1, pageCount:6,
+  hint:"Level on top, Tone underneath — one column per memory.",
   cells:[
-    {label:"Age",kind:"dial",idx:2,values:[{t:"3s",f:0},{t:"180s",f:.59},{t:"300s",f:1}],
-      desc:v=>"Age — knob 1. How long this memory takes to fade to silence: "+v.t+". Also the clock every flavor knob's glide is timed against."},
-    {label:"Drive",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"25%",f:.25},{t:"70%",f:.7}],
-      desc:v=>"Drive — knob 2. Tape saturation, "+v.t+". Not turn-based — eases toward its value continuously."},
-    {label:"ECHO",kind:"box",idx:0,values:["-","7","F","O"],
-      desc:v=>"ECHO — knob 3, read-only. This memory's own state as one character: "+v+"."},
-    {label:"Erase",kind:"trigger",idx:0,values:["ERASE"],
-      desc:v=>"Erase — knob 4. Always reads ERASE. Instant on an empty or recording memory; a 10-second fade on a playing one."},
-    {label:"Warp",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"35%",f:.35},{t:"70%",f:.7}],
-      desc:v=>"Warp — knob 5, "+v.t+". Pitch wobble — wow and flutter on the read head. Starts at zero; turn-based."},
-    {label:"Darken",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"40%",f:.4},{t:"85%",f:.85}],
-      desc:v=>"Darken — knob 6, "+v.t+". Reverb wash that gets more present, darker, and longer together. Starts at zero; turn-based."},
-    {label:"VINYL",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"55%",f:.55},{t:"90%",f:.9}],
-      desc:v=>"VINYL — knob 7, "+v.t+". Surface crackle, volume then density past halfway. Starts at zero; turn-based."},
-    {label:"Hiss",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"20%",f:.2},{t:"50%",f:.5}],
-      desc:v=>"Hiss — knob 8, "+v.t+". Brightened tape noise, kept deliberately quiet. Starts at zero; turn-based."},
+    {label:"A",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.53},{t:"150%",f:1}],
+      desc:v=>"Level A — knob 1. Memory A sits at "+v.t+" in the mix. Goes to 150%, so a worn-down memory can be pushed back up."},
+    {label:"B",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.53},{t:"120%",f:.8}],
+      desc:v=>"Level B — knob 2, at "+v.t+"."},
+    {label:"C",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.53},{t:"45%",f:.3}],
+      desc:v=>"Level C — knob 3, at "+v.t+"."},
+    {label:"D",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.53},{t:"20%",f:.13}],
+      desc:v=>"Level D — knob 4, at "+v.t+"."},
+    {label:"A",kind:"dial",idx:1,values:[{t:"-100",f:0},{t:"0",f:.5},{t:"+100",f:1}],
+      desc:v=>"Tone A — knob 5, at "+v.t+". Centre is bypass; left low-passes, right high-passes. Reversible — nothing is printed onto the tape."},
+    {label:"B",kind:"dial",idx:1,values:[{t:"-100",f:0},{t:"0",f:.5},{t:"-45",f:.28}],
+      desc:v=>"Tone B — knob 6, at "+v.t+". Negative means the top is being swept away."},
+    {label:"C",kind:"dial",idx:1,values:[{t:"-100",f:0},{t:"0",f:.5},{t:"+60",f:.8}],
+      desc:v=>"Tone C — knob 7, at "+v.t+". Positive means the bottom is being swept away."},
+    {label:"D",kind:"dial",idx:1,values:[{t:"-100",f:0},{t:"0",f:.5},{t:"+100",f:1}],
+      desc:v=>"Tone D — knob 8, at "+v.t+"."},
+  ]
+});
+
+/* ---------------- A loop page ---------------- */
+buildDevice(document.getElementById("loopDevice"),{
+  id:"loop", title:"Loop A", pageIndex:2, pageCount:6,
+  hint:"Age, Trim, Space and ECHO on top; the four ways it comes apart underneath.",
+  cells:[
+    {label:"Age",kind:"dial",idx:2,values:[{t:"3s",f:0},{t:"60s",f:.2},{t:"300s",f:1}],
+      desc:v=>"Age — knob 1. This memory takes "+v.t+" to go from full to gone."},
+    {label:"Trim",kind:"dial",idx:1,values:[{t:"START",f:.2},{t:"FULL",f:.5},{t:"END",f:.8}],
+      desc:v=>v.t==="FULL"?"Trim — knob 2, centred: the whole recording plays.":(v.t==="START"?"Trim — knob 2, turned left: the loop starts later, so the front is cut. Nothing is erased.":"Trim — knob 2, turned right: the loop ends earlier, so the back is cut.")},
+    {label:"Space",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"40%",f:.4},{t:"100%",f:1}],
+      desc:v=>"Space — knob 3, at "+v.t+". How much of this memory feeds the shared reverb at the end of the chain."},
+    {label:"ECHO",kind:"box",idx:0,values:["-","9","F","O"],
+      desc:v=>"ECHO — knob 4, read-only. This memory alone: "+(v==="-"?"empty.":(v==="F"?"frozen.":(v==="O"?"overdubbing.":"about 90% left.")))},
+    {label:"Warp",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"35%",f:.35},{t:"100%",f:1}],
+      desc:v=>"Warp — knob 5, at "+v.t+". Wow, flutter and a random drift, so it never settles into a pattern."},
+    {label:"Darken",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"60%",f:.6},{t:"100%",f:1}],
+      desc:v=>"Darken — knob 6, at "+v.t+". A rate of top-end loss per pass; past halfway a dark reverb wash blends in."},
+    {label:"VINYL",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"50%",f:.5},{t:"100%",f:1}],
+      desc:v=>"VINYL — knob 7, at "+v.t+". A gate that takes the quiet parts first, permanently. Freeze stops it."},
+    {label:"Hiss",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"50%",f:.5},{t:"100%",f:1}],
+      desc:v=>"Hiss — knob 8, at "+v.t+". Printed onto the tape each pass, so it builds: silent at first, the last thing left at the end."},
   ]
 });
 
 /* ============ ramp mechanic demo ============ */
-(function(){
-  const fill=document.getElementById("rFill"), target=document.getElementById("rTarget");
-  const applied=document.getElementById("rApplied"), msg=document.getElementById("rMsg");
-  const frzBtn=document.getElementById("rFreeze");
-  let cur=0, touched=false, frozen=false, raf=null;
-
-  function setBar(v){ fill.style.width=v+"%"; applied.textContent="applied "+Math.round(v)+"%"; }
-  function animate(to,dur,label){
-    cancelAnimationFrame(raf);
-    const from=cur, start=performance.now(), d=Math.max(dur,1);
-    function step(t){
-      const p=Math.min(1,(t-start)/d);
-      cur=from+(to-from)*p; setBar(cur);
-      if(p<1) raf=requestAnimationFrame(step); else { cur=to; setBar(cur); }
-    }
-    raf=requestAnimationFrame(step);
-    msg.innerHTML=label;
-  }
-  document.querySelectorAll(".ramp-buttons button[data-v]").forEach(btn=>{
-    btn.onclick=()=>{
-      const v=parseFloat(btn.dataset.v);
-      target.style.left=v+"%";
-      if(frozen){
-        animate(v,650,"Frozen — glides over a fixed <b>150ms</b> (slowed down here to be visible). Live, knob-following control.");
-      } else if(!touched){
-        touched=true; cancelAnimationFrame(raf); cur=v; setBar(v);
-        msg.innerHTML="<b>First touch</b> — jumped straight to "+v+"%. No ramp.";
-      } else {
-        const remain=1300+Math.random()*900;
-        animate(v,remain,"<b>Turned again</b> — gliding toward "+v+"% over whatever's left of this memory's Age.");
-      }
-    };
-  });
-  frzBtn.onclick=()=>{
-    frozen=!frozen; frzBtn.textContent="Frozen: "+(frozen?"on":"off"); frzBtn.classList.toggle("on",frozen);
-  };
-})();
 </script>
 </body>
 </html>
