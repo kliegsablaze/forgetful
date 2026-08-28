@@ -88,7 +88,11 @@
 
 extern audio_fx_api_v2_t* move_audio_fx_init_v2(const host_api_v1_t *host);
 
-#define TEST_PI_F 3.14159265358979323846f
+/* Spelled out rather than M_PI: that is not declared under gcc with a
+ * strict -std=c99, which is what CI builds with, although clang on macOS
+ * provides it — so a test using M_PI passes locally and fails in CI. */
+#define TEST_PI   3.14159265358979323846
+#define TEST_PI_F ((float)TEST_PI)
 
 #define SAMPLE_RATE   44100
 #define BLOCK_FRAMES  128
@@ -1684,7 +1688,7 @@ int main(void) {
             }
             for (int band = 0; band < 2; band++) {
                 double fq = band ? 6000.0 : 150.0;
-                double w = 2.0 * M_PI * fq / (double)SAMPLE_RATE;
+                double w = 2.0 * TEST_PI * fq / (double)SAMPLE_RATE;
                 double c = 2.0 * cos(w), s1 = 0.0, s2 = 0.0;
                 for (long i = 0; i < n; i++) { double s0 = x[i] + c*s1 - s2; s2 = s1; s1 = s0; }
                 double m = sqrt(fabs(s1*s1 + s2*s2 - c*s1*s2)) / (double)n;
