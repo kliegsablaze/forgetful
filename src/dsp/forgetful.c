@@ -2426,7 +2426,7 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                  * "ECHO" (was "Memory", "State", "Status" — LABEL_CHARS=5
                  * in render_page_movy.mjs ruled "Memory" out), same poetic
                  * pass as Master's own master_loops_overview. */
-                ",{\"key\":\"loop%c_state\",\"name\":\"%c\",\"type\":\"enum\","
+                ",{\"key\":\"loop%c_state\",\"name\":\"ECHO\",\"type\":\"enum\","
                   "\"options\":[\"-\"],\"access\":\"read\"}"
                 ",{\"key\":\"loop%c_wow\",\"name\":\"Warp\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}"
@@ -2436,7 +2436,7 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}"
                 ",{\"key\":\"loop%c_hiss\",\"name\":\"Hiss\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}",
-                c, c, c, c, c, c, c, c, c);
+                c, c, c, c, c, c, c, c);
         }
         pos += snprintf(json + pos, sizeof(json) - pos, "]");
         if (pos >= (int)sizeof(json) || pos >= len) return -1;
@@ -2482,7 +2482,10 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                 "{\"key\":\"loopC_speed\",\"label\":\"C\"},"
                 "{\"key\":\"loopD_speed\",\"label\":\"D\"},"
                 "{\"level\":\"sound\",\"label\":\"Sound\"},"
-                "{\"level\":\"loops\",\"label\":\"Loops\"}]}"
+                "{\"level\":\"loopA\",\"label\":\"Loop A\"},"
+                "{\"level\":\"loopB\",\"label\":\"Loop B\"},"
+                "{\"level\":\"loopC\",\"label\":\"Loop C\"},"
+                "{\"level\":\"loopD\",\"label\":\"Loop D\"}]}"
               /* Sound: level on the top row, tone underneath, so each
                * memory reads as a column — how loud it is, and what is
                * left of it. Speed moved to Main, under the transport it
@@ -2494,27 +2497,24 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                 "\"loopC_volume\",\"loopD_volume\","
                 "\"loopA_tone\",\"loopB_tone\","
                 "\"loopC_tone\",\"loopD_tone\"]}");
-        /* ONE level for all four loops, so they are one SECTION rather
-         * than four. A section is a ui_hierarchy LEVEL: pages sharing a
-         * level are grouped into one bank-bar segment, are one row in the
-         * section picker, and Shift+jog steps between sections rather than
-         * pages. 32 knobs paginate into four pages inside it.
+        /* One level PER LOOP, so each is its own section with its own
+         * name. A section is a ui_hierarchy LEVEL — pages sharing a level
+         * are one bank-bar segment and one row in the section picker — so
+         * four levels is four sections, six in total with Main and Sound.
          *
-         * The cost is the page NAMES — the planner's claimName() numbers a
-         * level's continuation pages, so these read "Loops", "Loops - 2",
-         * "- 3", "- 4" rather than Loop A..D. The knob that would otherwise
-         * be labelled ECHO carries the loop's LETTER instead (its value is
-         * still that loop's state character), so each page still says which
-         * memory you are on. */
-        pos += snprintf(json + pos, sizeof(json) - pos, ",\"loops\":{\"label\":\"Loops\",\"knobs\":[");
+         * They were briefly merged into a single "loops" level (2026-08-27)
+         * to make the four one section. That works, but the planner's
+         * claimName() numbers a level's continuation pages, so they read
+         * "Loops - 2".."Loops - 4" and the page stopped saying which memory
+         * it was. Named pages won. */
         for (int i = 0; i < NUM_LOOPS; i++) {
             char c = LOOP_LETTERS[i];
             pos += snprintf(json + pos, sizeof(json) - pos,
-                "%s\"loop%c_decay_rate\",\"loop%c_trim\",\"loop%c_send\",\"loop%c_state\","
-                  "\"loop%c_wow\",\"loop%c_hf_loss\",\"loop%c_chaos\",\"loop%c_hiss\"",
-                i ? "," : "", c, c, c, c, c, c, c, c);
+                ",\"loop%c\":{\"label\":\"Loop %c\",\"knobs\":["
+                  "\"loop%c_decay_rate\",\"loop%c_trim\",\"loop%c_send\",\"loop%c_state\","
+                  "\"loop%c_wow\",\"loop%c_hf_loss\",\"loop%c_chaos\",\"loop%c_hiss\"]}",
+                c, c, c, c, c, c, c, c, c, c);
         }
-        pos += snprintf(json + pos, sizeof(json) - pos, "]}");
         pos += snprintf(json + pos, sizeof(json) - pos, "}}");
         if (pos >= (int)sizeof(json) || pos >= len) return -1;
         strcpy(buf, json);

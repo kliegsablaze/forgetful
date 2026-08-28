@@ -116,7 +116,7 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
   <a class="s" href="#what">What it is</a>
   <a class="s" href="#main-page">Main</a>
   <a class="s" href="#sound-page">Sound</a>
-  <a class="s" href="#loop-page">Loops</a>
+  <a class="s" href="#loop-page">Loop pages</a>
   <a class="s" href="#ramps">How it wears</a>
   <a class="s" href="#ideas">Ideas</a>
 </div></nav>
@@ -148,12 +148,13 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
       on itself.</p>
     </div>
     <div>
-      <p>The controls sit in three sections. <b>Main</b> is where you
-      choose which memory is listening and set how fast each plays.
-      <b>Sound</b> is level and tone for all four at once. <b>Loops</b> is
-      four pages, one per memory, where you shape how it falls apart.</p>
-      <p>The jog steps page by page; <b>Shift + jog</b> jumps section to
-      section, and a click with no knob held opens the section list.</p>
+      <p>The controls sit on six pages. <b>Main</b> is where you choose
+      which memory is listening and set how fast each plays. <b>Sound</b>
+      is level and tone for all four at once. Then one page each for
+      <b>Loop A</b> through <b>Loop D</b>, where you shape how that memory
+      falls apart.</p>
+      <p>The jog steps page to page; a click with no knob held opens the
+      page list, so you can jump straight to one.</p>
       <p class="seq"><b>Send</b> → <b>Rec</b> → <b>plays &amp; comes apart</b> → <b>silent</b></p>
     </div>
   </div>
@@ -176,7 +177,7 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
 
 <!-- ============================ MAIN PAGE ============================ -->
 <section id="main-page">
-  <div class="eyebrow">Section 1 — Main</div>
+  <div class="eyebrow">Screen — page 1 of 6</div>
   <h2 class="sh">Main</h2>
   <p>The page you land on: which memory is listening, what all four are
   doing, and how fast each one runs. Click a control to see what it does.</p>
@@ -198,7 +199,7 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
 
 <!-- ============================ SOUND PAGE ============================ -->
 <section id="sound-page">
-  <div class="eyebrow">Section 2 — Sound</div>
+  <div class="eyebrow">Screen — page 2 of 6</div>
   <h2 class="sh">Sound</h2>
   <p>Level over tone, four columns — one per memory. How loud it is, and
   what's left of it.</p>
@@ -214,12 +215,11 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
 
 <!-- ============================ LOOP PAGE ============================ -->
 <section id="loop-page">
-  <div class="eyebrow">Section 3 — Loops</div>
-  <h2 class="sh">Loops</h2>
-  <p>Four pages in one section, one per memory, all the same layout — jog
-  through them. The fourth knob is labelled with the memory's letter, so
-  the page always says which one you're on; its value is that memory's
-  state character.</p>
+  <div class="eyebrow">Screen — pages 3–6</div>
+  <h2 class="sh">Loop A, B, C, D</h2>
+  <p>One page per memory, each named for it, all the same layout. This is
+  where you decide how that memory comes apart, and how much of it
+  plays.</p>
   <div class="device" id="loopDevice"></div>
 
   <div class="flist">
@@ -229,8 +229,8 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
       <div class="fd">Picks how much of the recording plays. Centre plays all of it. Turn <b>left</b> and the loop starts later, cutting the front; turn <b>right</b> and it ends earlier, cutting the back. Either way it gets shorter. Nothing is erased — turn back and it returns. The part you've cut off also stops wearing out, since it isn't passing the head, so bring it back later and it sounds as it did when you cut it.</div></div>
     <div class="frow"><div><div class="fn">Space</div></div>
       <div class="fd">How much of this memory goes into the shared reverb at the end of the chain — a long, dense tail of about six and a half seconds. Post-fader, so turning the memory down turns its send down too. The reverb keeps ringing after you pull the send back.</div></div>
-    <div class="frow"><div><div class="fn">A / B / C / D</div></div>
-      <div class="fd">Labelled with this memory's letter, so you always know which page you're on. Its value is that memory's state as a single character — the same codes as Main's ECHO, for this one alone.</div></div>
+    <div class="frow"><div><div class="fn">ECHO</div></div>
+      <div class="fd">This memory's own state as a single character — the same codes as Main's ECHO, for this one alone.</div></div>
     <div class="frow"><div><div class="fn">Warp</div></div>
       <div class="fd">A transport that can't hold its speed: a slow sag, a faster flutter, and a drift that wanders at random so it never settles into a pattern. Gentle settings sag; the top of the travel is a machine coming apart.</div></div>
     <div class="frow"><div><div class="fn">Darken</div></div>
@@ -626,7 +626,7 @@ buildDevice(document.getElementById("soundDevice"),{
 
 /* ---------------- A loop page ---------------- */
 buildDevice(document.getElementById("loopDevice"),{
-  id:"loop", title:"Loops", pageIndex:2, pageCount:6,
+  id:"loop", title:"Loop A", pageIndex:2, pageCount:6,
   hint:"Age, Trim, Space and ECHO on top; the four ways it comes apart underneath.",
   cells:[
     {label:"Age",kind:"dial",idx:2,values:[{t:"3s",f:0},{t:"60s",f:.2},{t:"300s",f:1}],
@@ -635,8 +635,8 @@ buildDevice(document.getElementById("loopDevice"),{
       desc:v=>v.t==="FULL"?"Trim — knob 2, centred: the whole recording plays.":(v.t==="START"?"Trim — knob 2, turned left: the loop starts later, so the front is cut. Nothing is erased.":"Trim — knob 2, turned right: the loop ends earlier, so the back is cut.")},
     {label:"Space",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"40%",f:.4},{t:"100%",f:1}],
       desc:v=>"Space — knob 3, at "+v.t+". How much of this memory feeds the shared reverb at the end of the chain."},
-    {label:"A",kind:"box",idx:0,values:["-","9","F","O"],
-      desc:v=>"A — knob 4, read-only. The label is the memory; the value is its state: "+(v==="-"?"empty.":(v==="F"?"frozen.":(v==="O"?"overdubbing.":"about 90% left.")))},
+    {label:"ECHO",kind:"box",idx:0,values:["-","9","F","O"],
+      desc:v=>"ECHO — knob 4, read-only. This memory alone: "+(v==="-"?"empty.":(v==="F"?"frozen.":(v==="O"?"overdubbing.":"about 90% left.")))},
     {label:"Warp",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"35%",f:.35},{t:"100%",f:1}],
       desc:v=>"Warp — knob 5, at "+v.t+". Wow, flutter and a random drift, so it never settles into a pattern."},
     {label:"Darken",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"60%",f:.6},{t:"100%",f:1}],
