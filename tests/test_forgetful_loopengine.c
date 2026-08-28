@@ -1686,7 +1686,7 @@ int main(void) {
             api->set_param(inst, "loopA_wow", "0");
             api->set_param(inst, "loopA_hf_loss", "0");
             api->set_param(inst, "loopA_send", "0");
-            char tv[16]; snprintf(tv, sizeof(tv), "%d", tones[k]);
+            char tv[16]; snprintf(tv, sizeof(tv), "%.2f", tones[k] / 100.0);
             api->set_param(inst, "loopA_tone", tv);
             run_silence(api, inst, BLOCK_FRAMES * 20);
 
@@ -1742,8 +1742,8 @@ int main(void) {
         api->set_param(inst, "loopA_hf_loss", "0.6");
         api->set_param(inst, "loopA_chaos", "0.8");
         api->set_param(inst, "loopA_hiss", "0.5");
-        api->set_param(inst, "loopA_trim", "20");
-        api->set_param(inst, "loopA_tone", "-70");
+        api->set_param(inst, "loopA_trim", "0.2");
+        api->set_param(inst, "loopA_tone", "-0.7");
         api->set_param(inst, "loopA_send", "0.9");
         api->set_param(inst, "loopA_speed", "1/4");
         api->set_param(inst, "loopA_volume", "1.4");
@@ -1767,7 +1767,7 @@ int main(void) {
         api->get_param(inst, "loopA_decay_rate", v, sizeof(v));
         check(atof(v) > 299.0, "test30: Age returns to its maximum");
         api->get_param(inst, "loopA_trim", v, sizeof(v));
-        check(atof(v) == 50.0, "test30: Trim returns to centre");
+        check(atof(v) > 0.49 && atof(v) < 0.51, "test30: Trim returns to centre");
         api->get_param(inst, "loopA_tone", v, sizeof(v));
         check(atof(v) == 0.0, "test30: Tone returns to centre");
         api->get_param(inst, "loopA_send", v, sizeof(v));
@@ -1795,7 +1795,7 @@ int main(void) {
          * silence for the splice, which erased a marker placed at the very
          * head — this test had never actually run, so that went unseen. */
         const int marker[2] = { 5, 150 };
-        const char *trims[2][3] = { { "50", "75", "95" }, { "50", "35", "20" } };
+        const char *trims[2][3] = { { "0.5", "0.75", "0.95" }, { "0.5", "0.35", "0.2" } };
         for (int pass = 0; pass < 2; pass++) {
             double prev = 0.0;
             for (int k = 0; k < 3; k++) {
@@ -1864,7 +1864,7 @@ int main(void) {
      * 282 — a click every pass. The join is crossfaded now.
      * --------------------------------------------------------------- */
     {
-        const char *trims[] = { "50", "60", "75", "90", "40", "25", "10" };
+        const char *trims[] = { "0.5", "0.6", "0.75", "0.9", "0.4", "0.25", "0.1" };
         for (size_t k = 0; k < sizeof(trims) / sizeof(trims[0]); k++) {
             void *inst = api->create_instance(".", NULL);
             check(inst != NULL, "test32: create_instance");
@@ -1906,6 +1906,45 @@ int main(void) {
                   "slope instead of jumping to ~8900");
             api->destroy_instance(inst);
         }
+    }
+
+    /* ---------------------------------------------------------------
+     * test33: every "%" param is declared as a FRACTION.
+     *
+     * The UI multiplies a %-unit value by 100 to display it — which is
+     * why loopX_volume declares 0..1.5 and reads as 0..150%. Trim and Tone
+     * were declared 0..100 and -100..100, so the device announced
+     * "Trim, 5000%". Nothing in the contract catches that; only the screen
+     * reader did.
+     * --------------------------------------------------------------- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        check(inst != NULL, "test33: create_instance");
+        static char js[16384];
+        int n = api->get_param(inst, "chain_params", js, sizeof(js));
+        check(n > 0, "test33: chain_params served");
+        /* Walk the declarations looking for a "%" unit whose max is > 2:
+         * no fraction-valued control has a legitimate maximum above that,
+         * and every 100-scale mistake lands well past it. */
+        const char *p = js;
+        int checked = 0, bad = 0;
+        while ((p = strstr(p, "\"unit\":\"%\"")) != NULL) {
+            const char *seg = p;
+            while (seg > js && *seg != '{') seg--;
+            const char *mx = strstr(seg, "\"max\":");
+            if (mx && mx < p) {
+                double m = atof(mx + 6);
+                checked++;
+                if (m > 2.0) bad++;
+            }
+            p++;
+        }
+        check(checked >= 12, "test33: found the %-unit params to check");
+        check(bad == 0,
+              "test33: no %-unit param declares a max above 2 — a "
+              "percentage control is a FRACTION on the wire, because the "
+              "UI scales it by 100 for display");
+        api->destroy_instance(inst);
     }
 
     if (g_failures > 0) {

@@ -2038,10 +2038,10 @@ static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *
          * loop_engine_t) — this is VINYL's live value. */
         flavor_ramp_set_param(&loop->crackle_ramp, &loop->applied_crackle, (float)atof(val), loop->memory, loop->decay_rate, loop->frozen);
     } else if (strcmp(suffix, "trim") == 0) {
-        loop->trim_pct = clampf((float)atof(val), 0.0f, 100.0f);
+        loop->trim_pct = clampf((float)atof(val) * 100.0f, 0.0f, 100.0f);
         return;
     } else if (strcmp(suffix, "tone") == 0) {
-        loop->tone = clampf((float)atof(val) / 100.0f, -1.0f, 1.0f);
+        loop->tone = clampf((float)atof(val), -1.0f, 1.0f);
         return;
     } else if (strcmp(suffix, "speed") == 0) {
         /* The option STRINGS are matched before any index fallback,
@@ -2076,10 +2076,10 @@ static int loop_get_param(const loop_engine_t *loop, uint64_t total_frames, cons
          * pointer parked at zero while the knob was actually centred —
          * reported from the device. The direction is legible from the
          * dial's own position either side of centre. */
-        return snprintf(buf, len, "%.0f", (double)loop->trim_pct);
+        return snprintf(buf, len, "%.4f", (double)(loop->trim_pct / 100.0f));
     }
     if (strcmp(suffix, "tone") == 0)
-        return snprintf(buf, len, "%.0f", (double)(loop->tone * 100.0f));
+        return snprintf(buf, len, "%.4f", (double)loop->tone);
     if (strcmp(suffix, "speed") == 0) {
         /* Names the CURRENT state, like Freeze — it is a setting you can
          * see rather than an action, and four of them sit side by side. */
@@ -2352,7 +2352,7 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                 ",{\"key\":\"loop%c_speed\",\"name\":\"%c\",\"type\":\"enum\","
                   "\"options\":[\"1/4\",\"1/2\",\"1x\",\"2x\"],\"default\":\"1x\"}"
                 ",{\"key\":\"loop%c_tone\",\"name\":\"%c\",\"type\":\"float\","
-                  "\"min\":-100,\"max\":100,\"default\":0,\"step\":1,\"unit\":\"%%\","
+                  "\"min\":-1,\"max\":1,\"default\":0,\"step\":0.01,\"unit\":\"%%\","
                   "\"display_format\":\"%%.0f\"}",
                 LOOP_LETTERS[i], LOOP_LETTERS[i], (double)DEFAULT_LOOP_VOLUME,
                 LOOP_LETTERS[i], LOOP_LETTERS[i],
@@ -2406,7 +2406,10 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                  * (saturation) keeps a nonzero default (0.25) since it's
                  * still the v1 auto-chase knob, not a v2 ramp. */
                 ",{\"key\":\"loop%c_trim\",\"name\":\"Trim\",\"type\":\"float\","
-                  "\"min\":0,\"max\":100,\"default\":50,\"step\":1,\"unit\":\"%%\","
+                  /* A "%" unit is SCALED BY 100 for display, as loopX_volume's
+                   * 0..1.5 showing as 0..150% proves. Declaring 0..100 here
+                   * made the readout say "Trim, 5000%" on the device. */
+                  "\"min\":0,\"max\":1,\"default\":0.5,\"step\":0.01,\"unit\":\"%%\","
                   "\"display_format\":\"%%.0f\"}"
                 ",{\"key\":\"loop%c_decay_rate\",\"name\":\"Age\",\"type\":\"float\","
                   "\"min\":3,\"max\":300,\"default\":300,\"step\":1,\"unit\":\"s\"}"
