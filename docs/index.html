@@ -129,7 +129,7 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
   <p class="lede">One live input, sent by hand into whichever of four tape
     memories you choose. The moment you move on, it starts <b>forgetting
     itself</b> — until it's silent, and ready to hold something new.</p>
-  <p class="chips">forgetful <b>v0.4.0</b> · audio_fx · requires <b>schwung</b></p>
+  <p class="chips">forgetful <b>v0.4.6</b> · audio_fx · requires <b>schwung</b></p>
 </header>
 
 <section id="what">
@@ -194,13 +194,15 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
     <div class="frow"><div><div class="fn">Send</div></div>
       <div class="fd">Points the live input at A, B, C or D. Only that one can hear you; the other three keep playing, aging or sitting empty exactly as they were.</div></div>
     <div class="frow"><div><div class="fn">ECHO</div></div>
-      <div class="fd">All four memories at once, one character each in A B C D order, arranged two over two. A dash for empty, <b>R</b> recording, <b>O</b> overdubbing, <b>F</b> frozen, or a digit for roughly how much is left. <code>9F</code> over <code>-1</code> reads as A near full, B frozen, C empty, D nearly gone.</div></div>
+      <div class="fd">All four memories at once, one character each in A B C D order, on a single line. A dash for empty, <b>R</b> recording, <b>O</b> overdubbing, <b>F</b> frozen, or a digit for how much is left. <code>9F-1</code> reads as A near full, B frozen, C empty, D nearly gone.<br>The digit counts <b>9 down to 1</b>, then a dash. It never shows 0 — <code>0</code> and <code>O</code> are the same shape on this screen, and a memory one tick from death should not look like one being overdubbed.</div></div>
     <div class="frow"><div><div class="fn">REC</div></div>
-      <div class="fd">One knob, four stages, each press moving to the next. <b>Press</b> to start recording; <b>press again</b> to stop, and it begins playing and wearing out; <b>press while it plays</b> to overdub, layering onto what's there without erasing it or resetting how far it has gone; <b>press again</b> to stop overdubbing. The readout names what the <i>next</i> press does.</div></div>
+      <div class="fd">One knob, four stages, each press moving to the next. <b>Press</b> to start recording; <b>press again</b> to stop, and it begins playing and wearing out; <b>press while it plays</b> to overdub, layering onto what's there without erasing it or resetting how far it has gone; <b>press again</b> to stop overdubbing. The readout names what the <i>next</i> press does.<br>Since Schwung 1.0 a <b>turn</b> of the knob fires it as well as a click — a whole flick counts as one press.</div></div>
     <div class="frow"><div><div class="fn">Freeze</div></div>
       <div class="fd">Stops that memory wearing out — it keeps looping exactly as ruined as it is, indefinitely. Nothing is written back onto the tape while it's frozen, so it holds. Press again to let it carry on. The readout names what it's doing now: <b>FROZEN</b> or <b>AGING</b>.</div></div>
     <div class="frow"><div><div class="fn">Speed</div></div>
-      <div class="fd">Four knobs, one per memory: <b>1/4</b>, <b>1/2</b>, <b>1x</b>, <b>2x</b>. 1x is home; one detent left is half speed, two is a quarter, one right is double. Changes glide over <b>five seconds</b> rather than jumping. A slowed memory also comes apart more slowly, because the damage happens per pass, not per second — half speed is also a way to preserve one.</div></div>
+      <div class="fd">Four knobs, one per memory, eight speeds each. <b>1x</b> is home. Turning <b>left</b> steps <b>1/2x</b>, <b>1/4x</b>, <b>2x</b>; turning <b>right</b> runs the tape <i>backwards</i> — <b>-1x</b>, <b>-1/2x</b>, <b>-1/4x</b>, <b>-2x</b>.
+      <br>Changes glide over <b>five seconds</b> rather than jumping, and a change of direction glides <i>through zero</i>: the tape slows, stops, and picks up backwards, the way a real one would. Going from 1x to -1x is five seconds of the loop grinding to a halt and running back the other way.
+      <br>A slowed memory also comes apart more slowly, because the damage happens per pass, not per second — half speed is also a way to preserve one.</div></div>
   </div>
 </section>
 
@@ -214,7 +216,7 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
 
   <div class="flist">
     <div class="frow"><div><div class="fn">Level</div></div>
-      <div class="fd">How loud each memory sits in the mix, independent of Send. Goes to <b>150%</b>, so a memory can be pushed as well as pulled back — useful once one has worn down to almost nothing and you want it back. Defaults to 80%.</div></div>
+      <div class="fd">How loud each memory sits in the mix, independent of Send. Goes to <b>200%</b>, so a memory can be pushed as well as pulled back — useful once one has worn down to almost nothing and you want it back. Defaults to 80%.<br>The top of that range is real gain on one quiet memory. On four loud ones at once it mostly drives the output limiter instead, which holds — nothing clips — but stops getting louder.</div></div>
     <div class="frow"><div><div class="fn">Tone</div></div>
       <div class="fd">A DJ filter, centred. Turn left and it low-passes, sweeping the top away; turn right and it high-passes, sweeping the bottom away. The middle is a true bypass. It's a performance control, not damage: sweeping it changes what you hear without printing anything onto the tape, so you can take the top off and put it back.</div></div>
   </div>
@@ -349,7 +351,7 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
 </section>
 
 <footer>
-  FORGETFUL · v0.4.0 · audio_fx · by <a href="https://github.com/kliegsablaze">kliegs</a><br>
+  FORGETFUL · v0.4.6 · audio_fx · by <a href="https://github.com/kliegsablaze">kliegs</a><br>
   Built on <a href="https://github.com/charlesvestal/schwung">schwung</a> by Charles Vestal, for the Ableton Move.
 </footer>
 
@@ -480,9 +482,9 @@ function drawTrigger(ctx,cx,y,selected){
   }
 }
 
-/* An enum: one bordered box, the same size everywhere, holding either a
-   single centred line or two stacked ones — ECHO's four characters read
-   as two rows of two, one row per pair of memories. */
+/* An enum: one bordered box, the same size everywhere, holding a single
+   centred line — or two stacked, which nothing uses now that ECHO's four
+   characters fit on one. */
 function drawBox(ctx,x,y,val){
   const w=20,h=15, lines=Array.isArray(val)?val:[val];
   run(ctx,x,x+w-1,y); run(ctx,x,x+w-1,y+h-1);
@@ -633,19 +635,19 @@ buildDevice(document.getElementById("mainDevice"),{
   cells:[
     {label:"Send",kind:"box",idx:0,values:["A","B","C","D"],
       desc:v=>"Send — knob 1. Points the live input at memory "+v+". Only "+v+" can hear it right now."},
-    {label:"ECHO",kind:"box2",idx:0,values:[["--","--"],["7R","--"],["9F","-1"],["FR","O1"]],
-      desc:v=>"ECHO — knob 2, read-only. All four memories, A B over C D: "+v.join(" / ")+" here."},
+    {label:"ECHO",kind:"box",idx:0,values:["----","7R--","9F-1","FRO1"],
+      desc:v=>"ECHO — knob 2, read-only. All four memories in A B C D order: "+v+". Digits run 9 down to 1, then a dash — never 0, which would look like O for overdub."},
     {label:"REC",kind:"trigger",idx:0,values:["REC","STOP","DUB","PLAY"],
       desc:v=>"REC — knob 3. Names what the next press does. Reads "+v+" now."},
     {label:"Freeze",kind:"trigger",idx:0,values:["AGING","FROZEN"],
       desc:v=>"Freeze — knob 4. "+(v==="FROZEN"?"This memory is held; nothing is being written onto its tape.":"This memory is wearing out normally.")},
-    {label:"A",kind:"box",idx:2,values:["1/4","1/2","1x","2x"],
-      desc:v=>"Speed A — knob 5. Memory A plays at "+v+". Changes glide over five seconds."},
-    {label:"B",kind:"box",idx:2,values:["1/4","1/2","1x","2x"],
+    {label:"A",kind:"box",idx:0,values:["1x","1/2x","-1x","-2x"],
+      desc:v=>"Speed A — knob 5. Memory A plays at "+v+". Changes glide over five seconds; a direction change glides through zero."},
+    {label:"B",kind:"box",idx:0,values:["1x","1/2x","-1x","-2x"],
       desc:v=>"Speed B — knob 6. Memory B plays at "+v+"; slower also means it comes apart slower."},
-    {label:"C",kind:"box",idx:2,values:["1/4","1/2","1x","2x"],
+    {label:"C",kind:"box",idx:0,values:["1x","1/2x","-1x","-2x"],
       desc:v=>"Speed C — knob 7. Memory C plays at "+v+"."},
-    {label:"D",kind:"box",idx:2,values:["1/4","1/2","1x","2x"],
+    {label:"D",kind:"box",idx:0,values:["1x","1/2x","-1x","-2x"],
       desc:v=>"Speed D — knob 8. Memory D plays at "+v+"."},
   ]
 });
@@ -655,13 +657,13 @@ buildDevice(document.getElementById("soundDevice"),{
   id:"sound", title:"Sound", pageIndex:1, pageCount:7,
   hint:"Level on top, Tone underneath — one column per memory.",
   cells:[
-    {label:"A",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.53},{t:"150%",f:1}],
-      desc:v=>"Level A — knob 1. Memory A sits at "+v.t+" in the mix. Goes to 150%, so a worn-down memory can be pushed back up."},
-    {label:"B",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.53},{t:"120%",f:.8}],
+    {label:"A",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.4},{t:"200%",f:1}],
+      desc:v=>"Level A — knob 1. Memory A sits at "+v.t+" in the mix. Goes to 200%, so a worn-down memory can be pushed back up."},
+    {label:"B",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.4},{t:"120%",f:.6}],
       desc:v=>"Level B — knob 2, at "+v.t+"."},
-    {label:"C",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.53},{t:"45%",f:.3}],
+    {label:"C",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.4},{t:"45%",f:.22}],
       desc:v=>"Level C — knob 3, at "+v.t+"."},
-    {label:"D",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.53},{t:"20%",f:.13}],
+    {label:"D",kind:"dial",idx:1,values:[{t:"0%",f:0},{t:"80%",f:.4},{t:"20%",f:.1}],
       desc:v=>"Level D — knob 4, at "+v.t+"."},
     {label:"A",kind:"dial",idx:1,values:[{t:"-100",f:0},{t:"0",f:.5},{t:"+100",f:1}],
       desc:v=>"Tone A — knob 5, at "+v.t+". Centre is bypass; left low-passes, right high-passes. It sits ahead of the VINYL crackle, so surface noise stays bright with the filter closed. Reversible — nothing is printed onto the tape."},
