@@ -411,7 +411,7 @@ static const speed_option_t SPEED_OPTIONS[] = {
 #define TRIM_DEFAULT_PCT      50.0f
 /* Headroom above unity, so a memory can be pushed rather than only pulled
  * back. The module's output limiter is what keeps that safe. */
-#define MAX_LOOP_VOLUME       1.5f
+#define MAX_LOOP_VOLUME       2.0f
 
 /* ---- Tone: one knob, both filters ------------------------------------
  * The Dirtywave M8's DJ filter. Centre is a true bypass; left sweeps a
@@ -2663,14 +2663,15 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
         for (int i = 0; i < NUM_LOOPS; i++) {
             pos += snprintf(json + pos, sizeof(json) - pos,
                 ",{\"key\":\"loop%c_volume\",\"name\":\"%c\",\"type\":\"float\","
-                  "\"min\":0,\"max\":1.5,\"default\":%.2f,\"step\":0.01,\"unit\":\"%%\","
+                  "\"min\":0,\"max\":%.1f,\"default\":%.2f,\"step\":0.01,\"unit\":\"%%\","
                   "\"display_format\":\"%%.0f\"}"
                 ",{\"key\":\"loop%c_speed\",\"name\":\"%c\",\"type\":\"enum\","
                   "\"options\":[%s],\"default\":\"%s\"}"
                 ",{\"key\":\"loop%c_tone\",\"name\":\"%c\",\"type\":\"float\","
                   "\"min\":-1,\"max\":1,\"default\":0,\"step\":0.01,\"unit\":\"%%\","
                   "\"display_format\":\"%%.0f\"}",
-                LOOP_LETTERS[i], LOOP_LETTERS[i], (double)DEFAULT_LOOP_VOLUME,
+                LOOP_LETTERS[i], LOOP_LETTERS[i],
+                (double)MAX_LOOP_VOLUME, (double)DEFAULT_LOOP_VOLUME,
                 LOOP_LETTERS[i], LOOP_LETTERS[i],
                 speed_opts, SPEED_OPTIONS[SPEED_DEFAULT_INDEX].label,
                 LOOP_LETTERS[i], LOOP_LETTERS[i]);
@@ -2724,7 +2725,7 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                  * still the v1 auto-chase knob, not a v2 ramp. */
                 ",{\"key\":\"loop%c_trim\",\"name\":\"Trim\",\"type\":\"float\","
                   /* A "%" unit is SCALED BY 100 for display, as loopX_volume's
-                   * 0..1.5 showing as 0..150% proves. Declaring 0..100 here
+                   * 0..2 showing as 0..200% proves. Declaring 0..100 here
                    * made the readout say "Trim, 5000%" on the device. */
                   "\"min\":0,\"max\":1,\"default\":0.5,\"step\":0.01,\"unit\":\"%%\","
                   "\"display_format\":\"%%.0f\"}"

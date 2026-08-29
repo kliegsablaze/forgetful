@@ -982,8 +982,8 @@ int main(void) {
 
         api->set_param(inst, "loopA_volume", "5");
         api->get_param(inst, "loopA_volume", buf, sizeof(buf));
-        check(strcmp(buf, "1.500") == 0,
-              "test10: loop volume clamps to MAX_LOOP_VOLUME (1.5 = 150%, raised\n"
+        check(strcmp(buf, "2.000") == 0,
+              "test10: loop volume clamps to MAX_LOOP_VOLUME (2.0 = 200%, raised\n"
               "              2026-08-27 so a memory can be pushed, not only pulled back)");
         api->set_param(inst, "loopA_volume", "-5");
         api->get_param(inst, "loopA_volume", buf, sizeof(buf));
