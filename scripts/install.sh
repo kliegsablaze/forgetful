@@ -9,6 +9,8 @@ cd "$(dirname "$0")/.."
 HOST="${MOVE_HOST:-ableton@move.local}"
 REMOTE_DIR="/data/UserData/schwung/modules/audio_fx/forgetful"
 BUILD_IMAGE="${FORGETFUL_BUILD_IMAGE:-forgetful-builder}"
+RELOAD=1
+[ "${1:-}" = "--no-reload" ] && RELOAD=0
 
 # Rebuild when dist/ is behind the tree, not only when it is missing.
 #
@@ -98,5 +100,69 @@ ssh "$HOST" "cd '$REMOTE_DIR' && \
     mv -f .forgetful.so.incoming forgetful.so && \
     mv -f .module.json.incoming module.json"
 
-echo "Done. The running instance keeps the old code until you reload the"
-echo "module (swap the slot away and back, or restart schwung)."
+# ---- reload, then PROVE the running process picked it up ----------------
+#
+# Copying the file is not deploying it. The shim has the old .so dlopen'd
+# for as long as the module sits in a slot, and the atomic rename gives the
+# new file its own inode, so the process keeps executing the old one — from
+# a file that no longer has a name.
+#
+# That is not theoretical: a Move sat on the previous build through FOUR
+# deploys, reporting the new version in module.json (which is just a file)
+# while running the old code, with 8 (deleted) regions in its maps. The
+# advice printed here at the time — "swap the slot away and back" — did not
+# take. So the script now reloads by default and, more importantly, REFUSES
+# TO CLAIM SUCCESS until the mapped inode matches the one on disk.
+#
+# --no-reload skips it, for when you are mid-take and will restart later.
+if [ "$RELOAD" = "0" ]; then
+    echo
+    echo "Deployed, NOT reloaded (--no-reload)."
+    echo "The running instance keeps the old code until schwung restarts."
+    exit 0
+fi
+
+echo "Reloading schwung so the new build is actually running..."
+ROOT_HOST="root@${HOST#*@}"
+if ! ssh -o ConnectTimeout=8 "$ROOT_HOST" true 2>/dev/null; then
+    echo
+    echo "Deployed, but could not reach $ROOT_HOST to restart schwung."
+    echo "The running instance is still on the OLD code. Restart it by hand." >&2
+    exit 1
+fi
+
+ssh "$ROOT_HOST" "/etc/init.d/move stop >/dev/null 2>&1 || true
+for name in MoveOriginal Move MoveLauncher MoveMessageDisplay shadow_ui schwung link-subscriber display-server; do
+  pids=\$(pidof \$name 2>/dev/null || true); [ -n \"\$pids\" ] && kill -9 \$pids 2>/dev/null || true
+done
+rm -f /dev/shm/move-shadow-* /dev/shm/move-display-*
+pids=\$(fuser /dev/ablspi0.0 2>/dev/null || true); [ -n \"\$pids\" ] && kill -9 \$pids 2>/dev/null || true
+sleep 3
+/etc/init.d/move start >/dev/null 2>&1" || true
+
+ssh "$ROOT_HOST" "
+want=\$(stat -c %i '$REMOTE_DIR/forgetful.so')
+i=0
+while [ \$i -lt 30 ]; do
+  pid=\$(pidof MoveOriginal 2>/dev/null | awk '{print \$1}')
+  got=\$(grep forgetful /proc/\$pid/maps 2>/dev/null | awk '{print \$5}' | sort -u | sed -n 1p)
+  if [ -n \"\$got\" ]; then
+    if [ \"\$got\" = \"\$want\" ]; then
+      echo \"  running the new build (inode \$got, 0 stale mappings: \$(grep -c '(deleted)' /proc/\$pid/maps))\"
+      exit 0
+    fi
+    echo \"  STILL OLD: mapped inode \$got, on disk \$want\" >&2
+    exit 1
+  fi
+  i=\$((i+1)); sleep 2
+done
+echo '  forgetful is not loaded in any slot — nothing to verify' >&2
+exit 2"
+rc=$?
+
+echo
+case $rc in
+  0) echo "Done — deployed AND verified running." ;;
+  2) echo "Deployed. Load Forgetful into a slot to run it." ;;
+  *) echo "Deployed, but the running process did NOT pick it up." >&2; exit 1 ;;
+esac
