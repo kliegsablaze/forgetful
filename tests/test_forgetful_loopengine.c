@@ -2457,6 +2457,52 @@ int main(void) {
         }
     }
 
+
+    /* ---- Test 39: the ECHO countdown never shows 0.
+     *
+     * '0' and 'O' are the same shape in the device font, so a loop about to
+     * die looked exactly like a loop being overdubbed — the two states
+     * furthest apart in meaning. Reported from the device 2026-08-29.
+     *
+     * The scale is now nine steps rounded UP, 9..1, so any memory left at
+     * all still shows a digit and '-' means gone rather than nearly gone.
+     *
+     * Sampled across a whole short life rather than at a couple of points,
+     * because the failing character only appears in the last tenth: the old
+     * decile scale passed every existing test in the suite. ---- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        record_short_ramp_loop_a(api, inst, SAMPLE_RATE / 2);
+        api->set_param(inst, "loopA_decay_rate", "3");   /* MIN_DECAY_RATE */
+
+        int seen[128];
+        memset(seen, 0, sizeof(seen));
+        char prev_digit = 0;
+        int monotonic = 1;
+        for (int t = 0; t < 120; t++) {                  /* ~4.4s > the 3s life */
+            char c[8];
+            api->get_param(inst, "loopA_state", c, sizeof(c));
+            unsigned char u = (unsigned char)c[0];
+            seen[u & 127] = 1;
+            if (c[0] >= '1' && c[0] <= '9') {
+                if (prev_digit && c[0] > prev_digit) monotonic = 0;
+                prev_digit = c[0];
+            }
+            run_silence(api, inst, SAMPLE_RATE / 27);
+        }
+        api->destroy_instance(inst);
+
+        check(!seen['0'],
+              "test39: ECHO never shows '0' — it is the same glyph as 'O' for "
+              "overdub, on the state that means the opposite");
+        check(seen['9'], "test39: a fresh take starts at 9");
+        check(seen['1'],
+              "test39: and reaches 1 — the bottom step is used, so the digit "
+              "runs out exactly when the loop does");
+        check(seen['-'], "test39: then goes to '-' when it is gone");
+        check(monotonic, "test39: the countdown only ever counts DOWN");
+    }
+
     /* The PASS line used to print unconditionally and the runner grepped
      * for it, so a suite with real failures still read as green — the same
      * class of blind pass signal as the earlier `grep -c "^FAIL"` that

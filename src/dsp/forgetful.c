@@ -2214,22 +2214,24 @@ static int loop_status_text(const loop_engine_t *loop, uint64_t total_frames, ch
 /* Master page's ECHO readout (access "read"): one character per loop in
  * A/B/C/D order. '-' for idle/forgotten, 'R' for recording, 'O' for
  * overdubbing, 'F' for frozen (2026-08-25 — all three checked before the
- * decile digit, since each of those is also LOOPING and would otherwise
+ * countdown digit, since each of those is also LOOPING and would otherwise
  * just show its stuck-or-ordinary percentage with no visual cue at all),
- * otherwise a single digit giving memory rounded DOWN to the nearest 10%
- * (e.g. 74% -> '7'). Declared as an enum (see the chain_params comment at
- * its declaration), which renders as two lines of up to 3 characters each.
+ * otherwise a digit counting the memory down.
  *
- * The '_' at the midpoint is a deliberate, load-bearing separator, not a
- * decoration: font5x3.mjs's enumSquareLines() treats "_" as a hard line
- * break, forcing a clean A+B / C+D split every time. Without it the renderer
- * falls back to its generic word-wrap, which only breaks on a "-" sitting
- * between two alphanumeric characters — so the split landed in a different,
- * sometimes uneven place depending on which glyphs happened to be adjacent
- * (e.g. "9R--" -> "9R"/"--", but "9999" -> "999"/"9", and "R-R-" -> "R"/"R"
- * with the two idle loops silently dropped, since '-' next to '-' is not an
- * alphanumeric boundary and never split at all). Reported from hardware
- * 2026-08-24 as a bad look, not a bug in the data. */
+ * NINE STEPS, 9..1, AND NEVER 0. The scale used to be deciles rounded down,
+ * 9..0, and the bottom of it was unreadable: '0' and 'O' are the same shape
+ * in this font, so a loop about to die looked exactly like a loop being
+ * overdubbed — the two states furthest apart in meaning. Reported from the
+ * device 2026-08-29.
+ *
+ * Rounding UP is what keeps the bottom step honest: any memory left at all
+ * shows '1', so the digit runs out at the same moment the loop does, and
+ * '-' means gone rather than nearly gone.
+ *
+ * The four characters are emitted with no separator; before Schwung 1.0 the
+ * cell could not hold four on one line and an '_' chose where the value
+ * broke into two rows of two. 1.0 widened it and the hint became a visible
+ * gap, so it went (2026-08-29). */
 static char loop_status_char(const loop_engine_t *loop, uint64_t total_frames) {
     int forgotten_display = (loop->forgotten_at != TIME_NOT_SET &&
         total_frames - loop->forgotten_at < FORGOTTEN_DISPLAY_FRAMES);
@@ -2245,10 +2247,10 @@ static char loop_status_char(const loop_engine_t *loop, uint64_t total_frames) {
     if (loop->frozen) {
         return 'F';
     }
-    int decile = (int)(loop->memory * 10.0f);
-    if (decile > 9) decile = 9;
-    if (decile < 0) decile = 0;
-    return (char)('0' + decile);
+    int step = (int)ceilf(loop->memory * 9.0f);
+    if (step > 9) step = 9;
+    if (step < 1) step = 1;          /* still playing => still a digit */
+    return (char)('0' + step);
 }
 
 static int master_loops_overview_text(const inst_t *s, char *buf, int len) {

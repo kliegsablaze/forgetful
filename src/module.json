@@ -2,7 +2,7 @@
   "id": "forgetful",
   "name": "Forgetful",
   "abbrev": "FRGT",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "dsp": "forgetful.so",
   "api_version": 2,
   "component_type": "audio_fx",
