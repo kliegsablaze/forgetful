@@ -1,4 +1,6 @@
-# Forgetful - Design Document (v8 - reflects the shipped v1 implementation)
+# Forgetful - Design Document
+
+Reflects the shipped implementation as of v0.5.1.
 
 **Module ID:** `forgetful`
 **Component type:** `audio_fx` (chainable - lives in a Signal Chain fx1/fx2 slot,
@@ -13,11 +15,11 @@ little more blurred each time you glance back at it.
 This document was rewritten 2026-08-25 against the actual shipped `forgetful.c`
 after an extended on-device tuning session diverged the implementation from
 the original v7 plan on nearly every axis: routing lost its `None` state,
-recording became a manual gesture instead of level-triggered, erase lost its
-double-click confirm in favor of a 10-second fade, overdub shipped, the flavor
-knobs became turn-based rather than randomized-then-live, Darken became a
-reverb wash, Glitch became VINYL crackle, and the whole UI vocabulary went
-through a poetic-naming pass. The sections below describe what is actually
+recording became a manual gesture instead of level-triggered, overdub
+shipped, the flavor knobs became turn-based rather than randomized-then-live,
+and the whole UI vocabulary went through a poetic-naming pass. It has been
+kept current since; Erase, Drive and Darken were all removed later, and
+Trim became START and END. The sections below describe what is actually
 running, not what was planned. History worth knowing is called out inline
 rather than kept in a separate "changed in vN" scaffold, since there's no
 longer a next planned version to diff against. This module was developed
@@ -38,43 +40,53 @@ imposed on you at random.
 
 ## Interaction Model
 
-**Five pages, navigated via jog wheel scroll:** Main (Master), then A, B, C, D.
-The root page is always titled "Main" by the shared page planner regardless
-of any label declared here (fleet-wide convention); the four loop pages are
-titled just their own letter.
+**Seven pages, navigated via jog wheel scroll:** Main, Sound, Loop A-D, and
+Glitch. Each is its own `ui_hierarchy` level, so each gets its own name and a
+real section break on the bank bar. The root page is always titled "Main" by
+the shared page planner whatever label is declared (fleet-wide convention).
 
-### Page 0 - Main
+### Main (level `root`)
 
 | Knob | Key | Label | Behavior |
 | --- | --- | --- | --- |
-| 1 | `input_routing` | **Send** | `enum`, options `A`/`B`/`C`/`D`, no `None` - default `A`. Determines which loop the live input currently feeds. Divable (touch + jog-click opens a scrolling picker); turning also steps it one option at a time. |
-| 2 | `master_loops_overview` | **ECHO** | Read-only (`access: "read"`) compact status readout, one character per loop in A/B/C/D order: `-` idle/forgotten, `R` recording, `O` overdubbing, `F` frozen, else a digit (memory rounded down to the nearest 10%) - e.g. `7R-1` means A is 70-79% remembered, B is recording, C is idle, D is 10-19% remembered. Declared as an `enum` (not `string`) so it renders through the enum-square glyph renderer, which gives it two lines of 3 characters instead of a single ~2-character truncated line. |
-| 3 | `master_record` | **REC** | Trigger (`access: "write"`). See "Recording, catching, overdubbing" below. |
+| 1 | `input_routing` | **Send** | `enum` `A`/`B`/`C`/`D`, default `A`. Which loop the live input feeds. |
+| 2 | `master_loops_overview` | **ECHO** | Read-only (`access: "read"`). One character per loop in A/B/C/D order on a single line: `-` idle/forgotten, `R` recording, `O` overdubbing, `F` frozen, else a digit. The digit counts **9 down to 1 and never 0** — `0` and `O` are the same glyph in this font, so a loop one tick from death would look like one being overdubbed. |
+| 3 | `master_record` | **REC** | Trigger (`access: "write"`). See "Recording, catching, overdubbing". |
 | 4 | `master_freeze` | **Freeze** | Trigger (`access: "write"`). Toggles `frozen` on the routed loop. |
-| 5 | `loopA_volume` | **A** | Continuous, 0-1, default 0.8 |
-| 6 | `loopB_volume` | **B** | Continuous, 0-1, default 0.8 |
-| 7 | `loopC_volume` | **C** | Continuous, 0-1, default 0.8 |
-| 8 | `loopD_volume` | **D** | Continuous, 0-1, default 0.8 |
+| 5-8 | `loopX_speed` | **A**-**D** | `enum`, eight options in knob order: `2x 1/4x 1/2x [1x] -1x -1/2x -1/4x -2x`. The four negatives play backwards. See "Speed and FREQ". |
 
-No blank/reserved knobs on this page - all eight are real params.
-
-### Page 1-4 - A / B / C / D
+### Sound (level `sound`)
 
 | Knob | Key | Label | Behavior |
 | --- | --- | --- | --- |
-| 1 | `loopX_decay_rate` | **Age** | Continuous, 3-300 (seconds), default 300 (full/max). How long the loop takes to fade to silence, linearly, once it starts LOOPING. Also the clock the five flavor knobs' turn-based ramps are timed against - see "Flavor knobs" below. |
-| 2 | `loopX_saturation` | **Drive** | Continuous, 0-1, default 0.25. Tape warmth/saturation. The one flavor knob that is NOT turn-based - see below. |
-| 3 | `loopX_state` | **ECHO** | Read-only, same single-character code as Main's `master_loops_overview`, for this one loop. |
-| 4 | `loopX_erase` | **Erase** | Trigger. See "Erase" below. |
-| 5 | `loopX_wow` | **Warp** | Continuous, 0-1, default 0 (untouched). Wow/flutter pitch modulation of the read head. |
-| 6 | `loopX_hf_loss` | **Darken** | Continuous, 0-1, default 0 (untouched). Drives a reverb wash - see "Darken" below. |
-| 7 | `loopX_chaos` | **VINYL** | Continuous, 0-1, default 0 (untouched). Vinyl surface crackle - see "VINYL" below. Wire key is still `chaos` (unchanged since the Glitch-era chaos-gate this replaced, to avoid autosave churn); the C field is named `crackle`. |
-| 8 | `loopX_hiss` | **Hiss** | Continuous, 0-1, default 0 (untouched). Tape hiss. |
+| 1-4 | `loopX_volume` | **A**-**D** | 0-2 (0-200%), default 0.8. Drawn as faders — the host's `detectFader` matches the `_volume` key. |
+| 5-8 | `loopX_tone` | **A**-**D** | -1..+1, default 0 (bypass). Left low-passes, right high-passes. Sits AFTER the write-back and BEFORE the wash and crackle, so it is reversible and surface noise stays bright with the filter closed. |
 
-Knob order here (Age, Drive, ECHO, Erase, Warp, Darken, VINYL, Hiss) is the
-result of two separate on-device reordering requests and does not mirror the
-signal's own processing order (Warp -> Darken -> Drive -> Hiss/VINYL mixed
-in) or any other principle beyond "this is the layout that was asked for."
+### Loop A-D (levels `loopA`..`loopD`)
+
+| Knob | Key | Label | Behavior |
+| --- | --- | --- | --- |
+| 1 | `loopX_decay_rate` | **Age** | 3-300 seconds, default 300. How long the loop takes to fade to silence. The clock every rate knob runs against. |
+| 2 | `loopX_start` | **START** | 0-1, default 0. Where the loop begins in the take. |
+| 3 | `loopX_end` | **END** | 0-1, default 1. Where it ends. Together these give any WINDOW of the take, which one bipolar Trim could not. |
+| 4 | `loopX_state` | **ECHO** | Read-only, the same single character as Main's overview, for this loop alone. |
+| 5 | `loopX_freq` | **FREQ** | -12..+12 semitones, default 0. Fine varispeed. Renders as `FRQ` — the host's fleet-wide `WORD_ABBREV`. |
+| 6 | `loopX_wow` | **Warp** | 0-1, default 0. Wow/flutter/drift on the read head. |
+| 7 | `loopX_send` | **Space** | 0-1, default 0. Post-fader send into the shared FDN reverb. |
+| 8 | `loopX_dust` | **DUST** | -1..+1, default 0. Both surface noises on one bipolar knob — see "DUST". |
+
+`loopX_chaos` (VINYL) and `loopX_hiss` remain declared in `chain_params` but
+are **not on any page**: DUST writes both. They stay declared so they remain
+LFO and CC targets and can still be driven individually.
+
+### Glitch (level `glitch`)
+
+End-of-chain step sequencer of destructive effects, after the send reverb and
+before the output limiter. Top row is the sequencer (`mix`, `step`, `odds`,
+`size`), bottom row the character (`kind`, `reach`, `pitch`, `width`).
+`kind` is Tumble / Stutter / Rewind / Tape / Gate / Crush. Mix defaults to 0
+and `odds` is a probability, so BOTH must be up before anything happens —
+which is what makes the page safe to leave loaded.
 
 ## Recording, catching, overdubbing
 
@@ -104,7 +116,7 @@ loop's own current playback position (nearest sample, hard-clipped int16 sum
 the mapping between "what you played" and "where it landed" gets uneven,
 since a modulated read speed can revisit or skip buffer positions across a
 pass). Overdubbing does **not** touch memory, the flavor knobs, reverb tail,
-or hiss coloring state at all - only a real erase resets those (see below).
+or hiss coloring state at all - only a new take resets those.
 Routing away from an overdubbing loop stops the overdub, for the same reason
 routing away from a Recording loop closes it: the shared dry input now
 belongs to whatever loop Send points at next, so an orphaned overdub can't be
@@ -115,36 +127,9 @@ forgetting to press REC again can't record forever. It's the one automatic
 close condition left; everything else about starting, stopping, and
 overdubbing is a deliberate press.
 
-## Erase
-
-Single click, no confirm (an earlier double-click-confirm was removed:
-touching the knob AND jog-clicking it is already a deliberate two-part
-gesture, so a second click on top of that was redundant caution rather than
-real safety). Fires on any non-idle-spelling write, same convention as every
-other trigger in this module.
-
-- **Idle / Recording:** clears instantly. Idle has nothing to fade; Recording
-  is an unfinished take being discarded outright, not a loop being let go of.
-- **Looping (frozen or not):** fades out over 10 seconds
-  (`ERASE_FADE_SECONDS`) via a per-loop `erase_fade_gain` multiplier (1.0 ->
-  0.0) applied on top of the ordinary memory-based level, then clears for
-  real once the gain reaches 0. This runs identically whether the loop is
-  frozen or not - freezing suspends memory decay and the flavor ramps, not
-  the erase fade, which has its own independent guard. ECHO shows the loop's
-  ordinary state characters throughout the fade (`F` if frozen, a memory
-  digit otherwise) and flips to `-` the instant it clears. A fresh `master_record`
-  press claims a loop mid-erase-fade immediately, rather than waiting out the
-  fade.
-
-The `loopX_erase` knob's own live readout is always **ERASE** (not
-state-aware - the loop's own status line already carries "Erasing..." as an
-unconstrained full-text readout for that case, and "ERASING" itself is too
-long for the 5-character budget these short readouts live under - see
-"Naming, and why some labels are longer than others" below).
-
 ## Flavor knobs: turn-based, not automatic
 
-Warp, Darken, Hiss, and VINYL share one mechanic ("v2", replacing an earlier
+Warp, Hiss and VINYL share one mechanic ("v2", replacing an earlier
 "v1" scheme where every knob auto-chased toward its raw value at a constant,
 Age-derived rate the instant a loop closed). Each is backed by a small
 `flavor_ramp_t { target, step, touched }`, not a plain float:
@@ -160,12 +145,7 @@ Age-derived rate the instant a loop closed). Each is backed by a small
 - **Every take starts completely untouched** - a knob dialed in on a
   previous take has no effect on the next one until you turn it again.
 
-**Drive is the one exception**, deliberately: it keeps the older
-auto-chase-toward-its-live-value behavior at a constant `decay_rate`-derived
-rate, not the turn-based scheme.
-
-**While frozen**, every write to any of the five flavor knobs (Drive
-included) starts a short, fixed 150ms glide (`FROZEN_GLIDE_SECONDS`) instead
+**While frozen**, every write to any flavour knob starts a short, fixed 150ms glide (`FROZEN_GLIDE_SECONDS`) instead
 of either the remaining-time ramp (meaningless while memory isn't draining)
 or an instant jump (reads as a snap, not a knob being played). Retriggered on
 every write, so turning the physical knob at a normal pace - a steady stream
@@ -173,20 +153,6 @@ of small writes - feels like continuous live tracking. It still marks the
 knob `touched`, so unfreezing "resumes normal mode with the new initial
 value at whatever the frozen turns left it at" - the next turn after
 unfreezing ramps from there, not from 0.
-
-## Darken: a reverb wash, not a filter
-
-Darken used to be a simple one-pole lowpass and was reported as "almost
-inaudible even at maximum" - a straight lowpass on a tape loop just reads as
-"slightly duller." It now drives a scaled-down Schroeder-Moorer reverb (4
-combs + 2 allpass per channel per loop, adapted from Schwung's own
-`freeverb.c` audio_fx module, which uses 8+4 - halved because up to four of
-these can run concurrently, one per loop, against a single freeverb
-instance). Three things scale together off the one `applied_hf_loss` value:
-wet-mix amount, internal damping (how dark the tail sounds), and feedback
-(how long the tail rings - "into a wall of reverb" at high settings, mapped
-through freeverb's own `room_size -> feedback` formula, `feedback = 0.70 +
-wet*0.28`). At `applied_hf_loss = 0` this is an exact dry passthrough.
 
 ## VINYL: crackle, not glitch
 
@@ -203,20 +169,33 @@ raising density up to its own ceiling. Gain and density constants have been
 cut twice since the initial rebalance in response to on-device "way too
 loud" reports.
 
-## Hiss
+## Hiss and VINYL are one knob now: DUST
 
-A highpassed noise (a slow lowpass of raw bipolar noise, subtracted back out
-- the complementary-filter trick, applied to the noise source rather than
-the signal) rather than raw broadband noise, which read as flat static
-rather than tape hiss. Ceiling has been cut twice from its initial value in
-response to on-device loudness reports.
+Both are the same failure of the same medium and were nearly always reached
+for together, so they share one bipolar control. LEFT leads with VINYL,
+RIGHT with Hiss, and past halfway each brings the other in behind it:
+
+```
+     -1.0        -0.5         0        +0.5        +1.0
+  VINYL 1.0   VINYL 0.5       -            -      VINYL 0.5
+  Hiss  0.5   Hiss  0        ---     Hiss  0.5    Hiss  1.0
+```
+
+so a full turn either way is all of one and HALF the other, never one alone.
+DUST *writes* the two underlying params rather than replacing them.
+
+Hiss is scaled by `age` so it builds as the take dies, but with a floor
+(`HISS_AGE_FLOOR`) so the knob does something the moment it is turned.
+Without the floor, hiss at full knob on a fresh take measured quieter than
+VINYL (22.8 against 35.1) and the right half of DUST did nothing audible
+until the loop was already well gone.
 
 ## Freeze
 
 `master_freeze` toggles `frozen` on the routed loop. While frozen: memory
-decay and Drive's normal auto-chase both suspend, so the loop keeps looping
+decay suspends, so the loop keeps looping
 audibly at whatever degradation it had already reached, indefinitely. The
-five flavor knobs stay fully live during freeze (see "Flavor knobs" above) -
+flavour knobs stay fully live during freeze (see "Flavor knobs" above) -
 freeze is meant as a way to park a loop's aging and sculpt its character by
 hand, not to silence knob input. Readout follows the same "what will the
 next press do" convention as `master_record`: **FREEZE** while unfrozen
@@ -255,10 +234,9 @@ rename was confined to string literals in `chain_params`/`ui_hierarchy`/
 IDLE ──(master_record fired while routed here)──> RECORDING
 RECORDING ──(master_record fired again, OR buffer_seconds reached,
              OR Send moves away from this loop)──> LOOPING
+LOOPING ──(master_record fired)──> LOOPING with overdubbing=1
+  ──(master_record fired again)──> LOOPING
 LOOPING ──(memory reaches 0)──> FORGOTTEN ──(auto, same block)──> IDLE
-LOOPING ──(loopX_erase fired)──> LOOPING with erasing=1, fading
-  ──(erase_fade_gain reaches 0)──> IDLE (hard clear)
-IDLE / RECORDING ──(loopX_erase fired)──> IDLE (instant clear)
 ```
 
 `frozen` and `overdubbing` are orthogonal boolean flags that only have any
@@ -282,90 +260,42 @@ One plugin instance internally manages four independent `loop_engine_t`s
 plus one shared input router (`input_routing`) and one shared block-scoped
 dry passthrough.
 
-### Signal flow per block, per LOOPING loop
-1. Wow/flutter-modulated read-head advance (`applied_wow` driven speed
-   modulation).
-2. If overdubbing: mix live dry input into the buffer at the nearest sample
-   to the read position.
-3. Interpolated buffer read.
-4. Darken: reverb wash (wet/damp/feedback all from `applied_hf_loss`).
-5. Drive: crossfade between the Darken-stage output and a fixed full-drive
-   tanh curve, scaled by `applied_saturation`.
-6. Hiss: highpass-colored noise added, scaled by `applied_hiss`.
-7. VINYL: click/pop envelope added, volume and density both driven by
-   `applied_crackle` via the two-stage mapping.
-8. Level scaling: multiply by `memory` and `erase_fade_gain`.
-9. (Not per-loop) Master-page `loopX_volume`, applied once after summing all
-   four loops' wet contributions.
-10. Chaos gate is gone (see "VINYL" above) - nothing left in this list
-    multiplicatively silences the loop's output at random.
-11. Read-head wrap; memory decay and the five flavor-knob ramps advance
-    together, guarded by `!erasing` (and, for memory/Drive specifically, also
-    `!frozen`) - see "Flavor knobs" and "Freeze" above.
-12. Erase-fade-gain progression, guarded only by `erasing` - runs regardless
-    of `frozen`.
+### Signal flow per sample, per LOOPING loop
 
-Dry input passes through unconditionally in every state, added once per
-sample; all four loops' wet contributions (each independently scaled by that
-loop's Master-page volume) sum on top of it.
+The order below is the audio path, not the knob order.
+
+1. Read-head advance, modulated by Warp (`applied_wow`) and scaled by the
+   signed rate — Speed's octave, FREQ's semitones and the direction ramp all
+   fold into one multiplier. The window is `[trim_lo, trim_hi)`, derived from
+   START and END, and the join is crossfaded at whichever edge is being
+   approached.
+2. If overdubbing: mix live dry input into the buffer at the read position,
+   walking in the direction of travel.
+3. Interpolated buffer read.
+4. Hiss: highpass-coloured noise, scaled by `applied_hiss * HISS_CEILING *
+   (HISS_AGE_FLOOR + (1-floor) * age)` — present from the start, louder as
+   the take dies.
+5. VINYL: click/pop envelope added, volume and density from
+   `applied_crackle`.
+6. Gate: the quiet material goes first, threshold rising with age squared.
+7. Level regulator: per-block gain solve on the mean square, clamped, so the
+   recursion neither dies nor runs away.
+8. **Write-back** into the buffer — this is the recursion, and everything
+   above it compounds pass over pass. Gated on `medium_active` and
+   `!frozen`.
+9. Tone (Sound page): after the write-back, so it is reversible, and before
+   the crackle so surface noise stays bright.
+10. Level scaling by `memory`.
+11. (Not per-loop) `loopX_volume`, applied once after summing all four.
+
+Everything from step 9 down is output only and never written back.
+
+After the four loops are summed: the shared FDN send reverb (run
+unconditionally, so a tail keeps ringing after Space is pulled back), then
+the Glitch page, then the output limiter and soft clip. Dry input passes
+through unconditionally in every state and is NOT glitched — it is the live
+performance walking through, not a memory of it.
 
 ### Capability flags
 `audio_in`, `audio_out`, `chainable: true`, `component_type: "audio_fx"`.
 Fully standard `chain_params`-driven module, no raw MIDI dependency.
-
-## Per-Module Settings (`settings-schema.json`) — still deferred
-
-Unchanged from the original plan: no chain-embedded `audio_fx` module in
-Schwung has a working path to read `config.json` at runtime
-(`create_instance` runs on the SPI callback thread, where file I/O is
-forbidden; the JS-side `host_read_file` path doesn't run for chain-embedded
-FX at all). Every tunable in this module remains a hardcoded C constant.
-Fixing this properly needs a `chain_host.c` change on the Schwung side
-(reading `config.json` at `dlopen`/`create_instance` time, off the realtime
-path) that's out of scope for this module and hasn't been picked up.
-
-## Status
-
-v1 is implemented, bench-tested (`tests/test_forgetful_loopengine.c`, run
-via `tests/run.sh`), and has been through many rounds of on-device tuning
-covering routing, recording, overdub, erase/freeze interaction, all five
-flavor knobs, and UI naming.
-
-## Open Questions / Risks
-
-- **CAPTURE-length readout words**: the 5-character value-text budget was
-  discovered empirically, one truncated word at a time, not from a documented
-  limit. Any future readout word needs checking against it before shipping.
-- **Overdub + Warp**: known rough edge, not fixed - overdubbing writes to the
-  nearest sample at the loop's current read position, which drifts unevenly
-  relative to what was actually played once Warp's speed modulation is
-  nonzero.
-- **Erase + Freeze interaction**: verified correct via direct API-level
-  testing (erase fades over the full 10s while frozen, ECHO clears to `-` at
-  the end) after being reported as "doesn't do anything" on-device; root
-  cause of the on-device symptom, if it's still occurring, has not been
-  found - it isn't reproducible at the DSP level, so it would be in
-  Schwung's UI/gesture dispatch layer, which hasn't been investigated.
-  Revisit if it recurs.
-- **A direct Main <-> loop-page navigation shortcut** (jog-click with no
-  knob touched) was investigated and found to be a moderate, not small,
-  change: a knob-less jog-click already opens a fleet-wide "Sections" picker
-  today (jog to scroll every level, click to jump), and a true one-click
-  jump would need a new opt-in field in Schwung's shared `ui_hierarchy`
-  contract, consulted by `src/shared/param_pages/page_input.mjs` before it
-  falls back to that picker - shared host infrastructure, not something this
-  module's own repo can implement alone. Deliberately not implemented
-  without that design work happening on the Schwung side.
-- **`settings-schema.json`**: still fully deferred, same reasoning as before
-  the rewrite - see "Per-Module Settings" above.
-
-## Build/Test Plan
-
-All steps from the original plan are complete: single-`LoopEngine` DSP,
-generalization to four loops plus the shared router, full `chain_params`/
-`ui_hierarchy` declarations, bench coverage (18 tests as of this writing:
-shape, manual record/overdub, decay timing including continuous per-sample
-decay, erase fade-out, routing, status-line formatting, parameter clamping,
-state round-trip, saturation passthrough, freeze, the v2 flavor-ramp
-first-touch/second-touch mechanic), and extensive on-device tuning. Not yet
-packaged as a release tarball or submitted to the module catalog.

@@ -39,41 +39,29 @@
  * total_frames counter drives the forgotten-display window for all four
  * loops. No syscalls in the hot path.
  *
- * Page layout (5 pages x 8 knobs): declared as five named ui_hierarchy
- * levels — root (Master) plus loopA..loopD, each reached via a nav entry in
- * root's "params" — rather than one flat 40-key array. A flat array's
- * overflow auto-splits into "Main-2".."Main-5" continuation pages with no
- * separators on the bank bar; on-device feedback 2026-08-24. Separate levels
- * give each loop page its own name (just "A".."D", 2026-08-25 — was "Loop
- * A".."Loop D", trimmed in the same poetic-naming pass as ECHO/HOLD) and a
- * real section break, same mechanism moog/minijv use for "Filter"/
- * "Oscillator 1". The
- * root page itself is always titled "Main" by the page planner regardless of
- * any label declared here (fleet-wide convention). Unused knob slots (was
- * "reserved" dummy params, Master 7-8 and each loop's 7) are now bare ""
- * entries in knobs[] — true empty grid space, not a param.
+ * Page layout (7 pages x 8 knobs): declared as seven named ui_hierarchy
+ * levels — root (Main), sound, loopA..loopD and glitch, the last six reached
+ * via nav entries in root's "params" — rather than one flat array. A flat
+ * array's overflow auto-splits into "Main-2".."Main-N" continuation pages
+ * with no separators on the bank bar; on-device feedback 2026-08-24.
+ * Separate levels give each page its own name and a real section break, the
+ * same mechanism moog/minijv use for "Filter"/"Oscillator 1". The root page
+ * is always titled "Main" by the page planner whatever label is declared
+ * here (fleet-wide convention).
  *
- *   Page 0 (Master, level "root"):  input_routing, master_loops_overview,
- *                      master_record, master_freeze, loopA_volume..loopD_volume
- *   Page 1-4 (levels "loopA".."loopD"): loopX_decay_rate (Age),
- *                      loopX_saturation (Drive), loopX_state (State),
- *                      loopX_erase, loopX_wow (Warp), loopX_hf_loss (Darken),
- *                      loopX_chaos (VINYL), loopX_hiss — order set 2026-08-25
- *                      on explicit on-device request (Age, Drive, State,
- *                      Erase, Warp, Darken, VINYL, Hiss; supersedes an
- *                      earlier same-day reorder). Wire keys are unaffected —
- *                      this is purely knobs[]/chain_params declaration order.
+ *   root    input_routing, master_loops_overview, master_record,
+ *           master_freeze, loopA..D_speed
+ *   sound   loopA..D_volume, loopA..D_tone
+ *   loopX   decay_rate (Age), start (START), end (END), state (ECHO),
+ *           freq (FREQ), wow (Warp), send (Space), dust (DUST)
+ *   glitch  mix, step, odds, size, kind, reach, pitch, width
  *
- * settings-schema.json isn't wired yet; constants below hardcode the
- * design doc's stated defaults, same as step 2.
+ * Wire keys are independent of this: it is purely knobs[]/chain_params
+ * declaration order.
  *
- * Build step 4 (docs/plans/forgetful-design.md, Build/Test Plan #4): the
- * status-text half. `loopX_status` (previously a bare state-name stub) now
- * builds the full state line the design doc specifies — "Looping - NN%
- * (word)" while looping, via memory_word()'s bucket mapping, "Listening..."
- * / "Recording" / "Forgotten" otherwise. ASCII punctuation throughout
- * (hyphen, three periods), not an em-dash or the Unicode ellipsis, matching
- * the Erase trigger's idle-spelling call ("-", not "—").
+ * loopX_chaos (VINYL) and loopX_hiss are declared in chain_params but are
+ * NOT on a page — DUST writes both. They stay declared so they remain LFO
+ * and CC targets.
  *
  * The Master page's "status overview" turned out not to be expressible as
  * text paired with each volume knob's cell: a chain_params entry only ever
@@ -322,7 +310,6 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * REVERB_FEEDBACK_MAX (0.98, freeverb's room_size=1 ceiling — audibly a
  * "wall", not literally infinite, since a true 1.0 feedback comb never
  * decays at all). */
-#define REVERB_NUM_COMBS     4
 #define REVERB_NUM_ALLPASS   2
 /* ---- Darken: the top end going --------------------------------------
  * The name says darkening, so the primary effect is now a real lowpass —
@@ -466,26 +453,8 @@ static const speed_option_t SPEED_OPTIONS[] = {
 #define GATE_ENV_ATTACK_S     0.003f
 #define GATE_ENV_RELEASE_S    0.120f
 
-#define DARKEN_POLES         1
-#define DARKEN_FC_MAX    20000.0f
 #define DARKEN_FC_MIN     1500.0f
 #define DARKEN_WASH_KNEE     0.55f
-#define DARKEN_DAMPING       0.55f /* comb damping at full wet — how dark the
-                                    * wash goes. Was 0.4; raised 2026-08-27
-                                    * with the age curve, since "Darken" at
-                                    * maximum should be genuinely hard to
-                                    * pick the source out of. */
-#define DARKEN_AGE_FULL      0.50f /* Darken reaches its knob setting by the
-                                    * time the take is this far gone, not at
-                                    * memory==0. Scaling it by raw `age`
-                                    * meant full wet arrived exactly as the
-                                    * loop vanished, so the knob's top half
-                                    * was never actually audible — reported
-                                    * 2026-08-27 as Darken not being
-                                    * pronounced enough at maximum. Reaching
-                                    * the destination half way also leaves a
-                                    * long plateau of full wash, which is
-                                    * the part that sounds like the record. */
 #define REVERB_FEEDBACK_MIN  0.70f
 #define REVERB_FEEDBACK_MAX  0.98f
 
@@ -851,7 +820,7 @@ typedef struct {
      * per loop rather than 128 times. The chase behind them moves over
      * seconds, so block granularity is inaudible. */
     float warp_amt;
-    float gate_thresh, gate_a, gate_r_coef, medium_level_a, medium_gain_a;
+    float gate_thresh, gate_a, gate_r_coef, medium_level_a;
     int   medium_active;
     float warp_drift, warp_drift_target;
     int   warp_drift_countdown;
@@ -944,7 +913,14 @@ typedef struct {
 
     /* noise generator — independent per loop so hiss/crackle textures never
      * perturb each other across loops */
-    uint32_t rng_state;
+    /* TWO streams, deliberately. Warp's random drift and the two surface
+     * noises used to share one, so gating the noise work (2026-08-29) also
+     * shifted the drift — a loop with Warp up and DUST down came out
+     * different, which is a wider blast radius than the optimisation was
+     * meant to have. Separate states keep each feature's randomness its
+     * own, so gating one can never perturb the other. */
+    uint32_t rng_state;      /* Warp drift */
+    uint32_t noise_rng;      /* Hiss + VINYL */
 } loop_engine_t;
 
 
@@ -1433,6 +1409,7 @@ static void init_loop(loop_engine_t *loop, uint32_t rng_seed) {
     loop->decay_rate = 300.0f;
     loop->forgotten_at          = TIME_NOT_SET;
     loop->rng_state = rng_seed;
+    loop->noise_rng = rng_seed * 2654435761u + 0x9E3779B9u;
 }
 
 static void *v2_create_instance(const char *dir, const char *cfg) {
@@ -1570,7 +1547,6 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
         loop->gate_a       = 1.0f - expf(-1.0f / (GATE_ENV_ATTACK_S  * SAMPLE_RATE));
         loop->gate_r_coef  = 1.0f - expf(-1.0f / (GATE_ENV_RELEASE_S * SAMPLE_RATE));
         loop->medium_level_a = 1.0f - expf(-1.0f / (MEDIUM_LEVEL_TAU_S * SAMPLE_RATE));
-        loop->medium_gain_a  = 1.0f - expf(-1.0f / (MEDIUM_GAIN_TAU_S  * SAMPLE_RATE));
         /* Nothing is re-printed unless something is actually degrading it:
          * a clean loop must stay bit-exact, not slowly acquire the
          * quantisation noise of being rewritten every pass. */
@@ -1688,9 +1664,21 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                                     (DRIFT_GLIDE_SECONDS * SAMPLE_RATE);
 
                 float w = loop->warp_amt;
-                float mod = (sinf(loop->wow_phase) * WOW_MOD_DEPTH +
-                             loop->warp_drift * DRIFT_MOD_DEPTH) * w +
-                            sinf(loop->flutter_phase) * FLUTTER_MOD_DEPTH * w * w;
+                /* Two sinf per sample per loop — EIGHT per sample with four
+                 * loops running — and both are multiplied by `w`, so with
+                 * Warp down the whole expression is exactly zero and the work
+                 * is pure waste. Measured 14.2 -> 11.5 us/block on four idle
+                 * loops, a fifth of the module's cost, for a branch.
+                 *
+                 * Bit-exact, not approximately so: every term carries a `w`
+                 * or a `w*w` factor. The phases still advance below, so the
+                 * wow is where it would have been when the knob comes up. */
+                float mod = 0.0f;
+                if (w > 0.0f) {
+                    mod = (sinf(loop->wow_phase) * WOW_MOD_DEPTH +
+                           loop->warp_drift * DRIFT_MOD_DEPTH) * w +
+                          sinf(loop->flutter_phase) * FLUTTER_MOD_DEPTH * w * w;
+                }
                 /* Warp modulates the MAGNITUDE; direction multiplies what
                  * comes out, so a reversed loop wows exactly as a forward
                  * one does rather than having its wow inverted. */
@@ -1834,7 +1822,7 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 /* Drive is gone (2026-08-27). Its tanh stage sat between
                  * Darken and Hiss; the medium's own recursion supplies the
                  * grit it used to, and its knob is now the reverb send. */
-                float sat_l = filt_l, sat_r = filt_r;
+
 
                 /* 3. Hiss — highpassed, not raw broadband noise. Reported
                  * from hardware 2026-08-25 as "just sounds like white
@@ -1870,12 +1858,21 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 float hiss_amount = clampf(loop->applied_hiss, 0.0f, 1.0f)
                                     * HISS_CEILING
                                     * (HISS_AGE_FLOOR + (1.0f - HISS_AGE_FLOOR) * age);
-                float noise_l = rng_bipolar(&loop->rng_state);
-                float noise_r = rng_bipolar(&loop->rng_state);
+                /* Skipped entirely with Hiss down. Both channels are only
+                 * ever used multiplied by hiss_amount, so at zero the result
+                 * is unchanged — but the RNG is not advanced, so the noise
+                 * SEQUENCE differs from what it would have been once Hiss
+                 * comes up. Statistically identical, not sample-identical;
+                 * that trade was taken deliberately (2026-08-29). */
+                float noise_l = 0.0f, noise_r = 0.0f;
+                if (hiss_amount > 0.0f) {
+                    noise_l = rng_bipolar(&loop->noise_rng);
+                    noise_r = rng_bipolar(&loop->noise_rng);
+                }
                 loop->hiss_lp_l += HISS_COLOR_COEFF * (noise_l - loop->hiss_lp_l);
                 loop->hiss_lp_r += HISS_COLOR_COEFF * (noise_r - loop->hiss_lp_r);
-                float hiss_l = sat_l + (noise_l - loop->hiss_lp_l) * hiss_amount;
-                float hiss_r = sat_r + (noise_r - loop->hiss_lp_r) * hiss_amount;
+                float hiss_l = filt_l + (noise_l - loop->hiss_lp_l) * hiss_amount;
+                float hiss_r = filt_r + (noise_r - loop->hiss_lp_r) * hiss_amount;
 
                 /* 4. VINYL crackle — mixed in ADDITIVELY right alongside
                  * Hiss, not a post-hoc gate (see CRACKLE_DUST_MAX_PROB for
@@ -1899,11 +1896,18 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                         t * (CRACKLE_MAX_DENSITY_FRAC - CRACKLE_BASELINE_DENSITY_FRAC);
                 }
                 loop->crackle_env *= CRACKLE_ENV_DECAY;
-                if (rng_range(&loop->rng_state, 0.0f, 1.0f) < crackle_density * CRACKLE_DUST_MAX_PROB) {
-                    loop->crackle_env += rng_bipolar(&loop->rng_state) * CRACKLE_DUST_GAIN;
-                }
-                if (rng_range(&loop->rng_state, 0.0f, 1.0f) < crackle_density * CRACKLE_POP_MAX_PROB) {
-                    loop->crackle_env += rng_bipolar(&loop->rng_state) * CRACKLE_POP_GAIN;
+                /* Both rolls skipped with VINYL down: the envelope they feed
+                 * is only ever heard multiplied by crackle_volume. Same RNG
+                 * trade as the hiss above. The decay still runs, so a tail
+                 * already ringing dies out as it always did rather than
+                 * being cut off. */
+                if (crackle_volume > 0.0f) {
+                    if (rng_range(&loop->noise_rng, 0.0f, 1.0f) < crackle_density * CRACKLE_DUST_MAX_PROB) {
+                        loop->crackle_env += rng_bipolar(&loop->noise_rng) * CRACKLE_DUST_GAIN;
+                    }
+                    if (rng_range(&loop->noise_rng, 0.0f, 1.0f) < crackle_density * CRACKLE_POP_MAX_PROB) {
+                        loop->crackle_env += rng_bipolar(&loop->noise_rng) * CRACKLE_POP_GAIN;
+                    }
                 }
                 /* ---- the medium ------------------------------------
                  * Everything above this point is what one pass of the tape
