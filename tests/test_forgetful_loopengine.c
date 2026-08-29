@@ -535,17 +535,18 @@ int main(void) {
         int key_count = 0;
         const char *p = cp;
         while ((p = strstr(p, "\"key\":\"")) != NULL) { key_count++; p += 7; }
-        check(key_count == 56,
-              "test0: chain_params has exactly 56 entries (8 master + 4x10 loop "
-              "+ 8 glitch; Erase went and Trim arrived 2026-08-27, Glitch 2026-08-28)");
+        check(key_count == 64,
+              "test0: chain_params has exactly 64 entries (8 master + 4x12 loop "
+              "+ 8 glitch). Went 56 -> 64 on 2026-08-29: Trim became START and "
+              "END, and DUST joined the VINYL and Hiss it drives.");
 
         /* Both JSON contracts are built into fixed stack buffers and
          * truncated silently by snprintf, so a page added without growing
          * one loses its tail and the module simply stops having that page.
          * Assert real headroom rather than "it parsed". */
-        check(n < 7000,
+        check(n < 10000,
               "test0: chain_params fits its buffer with real headroom — it is\n"
-              "built into a fixed 8192 stack buffer and snprintf truncates\n"
+              "built into a fixed 12288 stack buffer and snprintf truncates\n"
               "SILENTLY, so this must fail while there is still room to fix it");
 
         n = api->get_param(inst, "ui_hierarchy", hier, sizeof(hier));
@@ -586,16 +587,28 @@ int main(void) {
             snprintf(probe, sizeof(probe), "\"%s\"", master_keys[i]);
             check(strstr(hier, probe) != NULL, "test0: ui_hierarchy contains master key");
         }
+        /* Everything DECLARED, page or not. chaos and hiss are driven by
+         * DUST now and are off the grid, but they stay declared so they
+         * remain LFO and CC targets — so the two lists differ, and
+         * conflating them would either lose that coverage or assert a key
+         * onto a page it is deliberately not on. */
         static const char *loop_suffixes[] = {
-            "decay_rate", "wow", "freq", "hiss", "send", "chaos", "state", "speed", "tone", "trim"
+            "decay_rate", "wow", "freq", "hiss", "send", "chaos", "state", "speed", "tone",
+            "start", "end", "dust"
+        };
+        /* Only what the eight cells of a loop page actually show. */
+        static const char *loop_page_suffixes[] = {
+            "decay_rate", "start", "end", "state", "freq", "wow", "send", "dust"
         };
         static const char letters[] = { 'A', 'B', 'C', 'D' };
         for (int li = 0; li < 4; li++) {
             for (size_t si = 0; si < sizeof(loop_suffixes) / sizeof(loop_suffixes[0]); si++) {
                 snprintf(probe, sizeof(probe), "\"key\":\"loop%c_%s\"", letters[li], loop_suffixes[si]);
                 check(strstr(cp, probe) != NULL, "test0: chain_params contains per-loop key");
-                snprintf(probe, sizeof(probe), "\"loop%c_%s\"", letters[li], loop_suffixes[si]);
-                check(strstr(hier, probe) != NULL, "test0: ui_hierarchy contains per-loop key");
+            }
+            for (size_t si = 0; si < sizeof(loop_page_suffixes)/sizeof(loop_page_suffixes[0]); si++) {
+                snprintf(probe, sizeof(probe), "\"loop%c_%s\"", letters[li], loop_page_suffixes[si]);
+                check(strstr(hier, probe) != NULL, "test0: ui_hierarchy contains per-loop page key");
             }
         }
         check(strstr(cp, "reserved") == NULL, "test0: chain_params has no reserved keys");
@@ -1051,7 +1064,7 @@ int main(void) {
         api->set_param(src, "loopA_decay_rate", "12");
         api->set_param(src, "loopA_wow", "0.8");
         api->set_param(src, "loopA_send", "0.9");
-        api->set_param(src, "loopA_trim", "0.2");
+        api->set_param(src, "loopA_start", "0.2");
         api->set_param(src, "loopA_tone", "-0.7");
         api->set_param(src, "loopA_speed", "1/4x");
         api->set_param(src, "loopA_volume", "1.4");
@@ -1067,13 +1080,13 @@ int main(void) {
         check(dst != NULL, "test13: create_instance dst");
         api->set_param(dst, "state",
             "{\"input_routing\":2,\"loopA_volume\":1.4000,\"loopA_send\":0.9000,"
-            "\"loopA_decay_rate\":12.0,\"loopA_wow\":0.8000,\"loopA_trim\":0.2,"
+            "\"loopA_decay_rate\":12.0,\"loopA_wow\":0.8000,\"loopA_start\":0.2,"
             "\"loopA_tone\":-0.7,\"loopA_speed\":0.2500}");
 
         void *fresh = api->create_instance(".", NULL);
         check(fresh != NULL, "test13: create_instance fresh");
         static const char *keys13[] = { "loopA_decay_rate", "loopA_wow", "loopA_send",
-                                        "loopA_trim", "loopA_tone", "loopA_speed",
+                                        "loopA_start", "loopA_tone", "loopA_speed",
                                         "loopA_volume", "input_routing" };
         for (size_t k = 0; k < sizeof(keys13)/sizeof(keys13[0]); k++) {
             char a2[64], b2[64];
@@ -1641,11 +1654,10 @@ int main(void) {
          * level's 32 knobs into four pages inside it. */
         check(strstr(js, "\"level\":\"loopA\",\"label\":\"Loop A\"") != NULL,
               "test26: each loop is its own named section");
-        check(strstr(js, "\"loopA_decay_rate\",\"loopA_trim\",\"loopA_freq\",\"loopA_state\"") != NULL,
-              "test26: a loop page's top row is Age, Trim, FREQ, ECHO");
-        check(strstr(js, "\"loopA_wow\",\"loopA_send\",\"loopA_chaos\",\"loopA_hiss\"") != NULL,
-              "test26: and Space moved down to the flavour row, into the slot "
-              "Darken used to hold");
+        check(strstr(js, "\"loopA_decay_rate\",\"loopA_start\",\"loopA_end\",\"loopA_state\"") != NULL,
+              "test26: a loop page's top row is Age, START, END, ECHO");
+        check(strstr(js, "\"loopA_freq\",\"loopA_wow\",\"loopA_send\",\"loopA_dust\"") != NULL,
+              "test26: bottom row is FREQ, Warp, Space, DUST");
         /* 32 knobs must land 8 per page with one loop each, or a page
          * straddles two memories and every label lies. */
 
@@ -1857,8 +1869,10 @@ int main(void) {
         check(atof(v) > 0.5, "test30: the knob holds while the take is alive");
 
         run_silence(api, inst, (long)SAMPLE_RATE * 8);   /* well past its 6s */
-        static const char *flav[] = { "wow", "chaos", "hiss" };
-        for (int i = 0; i < 4; i++) {
+        static const char *flav[] = { "wow", "chaos", "hiss", "dust" };
+        /* sizeof, not a literal. This read flav[3] out of bounds from the
+         * moment Darken left and the array went 4 -> 3, and kept passing. */
+        for (size_t i = 0; i < sizeof(flav) / sizeof(flav[0]); i++) {
             char key[32];
             snprintf(key, sizeof(key), "loopA_%s", flav[i]);
             api->get_param(inst, key, v, sizeof(v));
@@ -1869,8 +1883,10 @@ int main(void) {
         /* Everything the take owned goes back to its default with it. */
         api->get_param(inst, "loopA_decay_rate", v, sizeof(v));
         check(atof(v) > 299.0, "test30: Age returns to its maximum");
-        api->get_param(inst, "loopA_trim", v, sizeof(v));
-        check(atof(v) > 0.49 && atof(v) < 0.51, "test30: Trim returns to centre");
+        api->get_param(inst, "loopA_start", v, sizeof(v));
+        check(atof(v) < 0.01, "test30: START returns to the head of the take");
+        api->get_param(inst, "loopA_end", v, sizeof(v));
+        check(atof(v) > 0.99, "test30: END returns to the tail of the take");
         api->get_param(inst, "loopA_tone", v, sizeof(v));
         check(atof(v) == 0.0, "test30: Tone returns to centre");
         api->get_param(inst, "loopA_send", v, sizeof(v));
@@ -1898,7 +1914,10 @@ int main(void) {
          * silence for the splice, which erased a marker placed at the very
          * head — this test had never actually run, so that went unseen. */
         const int marker[2] = { 5, 150 };
-        const char *trims[2][3] = { { "0.5", "0.75", "0.95" }, { "0.5", "0.35", "0.2" } };
+        /* pass 0 walks END inward (marker near the head survives);
+           pass 1 walks START inward (marker at 75% survives). */
+        const char *starts[2][3] = { { "0",   "0",    "0"   }, { "0",   "0.2",  "0.4" } };
+        const char *ends[2][3]   = { { "1",   "0.75", "0.5" }, { "1",   "1",    "1"   } };
         for (int pass = 0; pass < 2; pass++) {
             double prev = 0.0;
             for (int k = 0; k < 3; k++) {
@@ -1920,7 +1939,8 @@ int main(void) {
                 api->set_param(inst, "loopA_chaos", "0");
                 api->set_param(inst, "loopA_wow", "0");
                 api->set_param(inst, "loopA_send", "0");
-                api->set_param(inst, "loopA_trim", trims[pass][k]);
+                api->set_param(inst, "loopA_start", starts[pass][k]);
+                api->set_param(inst, "loopA_end",   ends[pass][k]);
 
                 static double x[900 * BLOCK_FRAMES];
                 long n = 0; double pk = 0.0;
@@ -1944,11 +1964,12 @@ int main(void) {
                 check(per > 0.0, "test31: the marker repeats, so a period is measurable");
                 if (k == 0) {
                     check(per > 0.5 && per < 0.65,
-                          "test31: at centre the whole take plays (~0.58s)");
+                          "test31: START 0 / END 1 plays the whole take (~0.58s)");
                 } else {
                     check(per < prev * 0.95,
-                          "test31: and every step away from centre makes the loop "
-                          "shorter — left from the front, right from the back");
+                          "test31: and moving either END inward or START forward "
+                          "makes the loop shorter — measured as PERIOD, which is "
+                          "the one thing the level regulator cannot fake");
                 }
                 prev = per;
                 api->destroy_instance(inst);
@@ -1966,8 +1987,9 @@ int main(void) {
      * 282 — a click every pass. The join is crossfaded now.
      * --------------------------------------------------------------- */
     {
-        const char *trims[] = { "0.5", "0.6", "0.75", "0.9", "0.4", "0.25", "0.1" };
-        for (size_t k = 0; k < sizeof(trims) / sizeof(trims[0]); k++) {
+        const char *starts[] = { "0",   "0",   "0",    "0",   "0.1", "0.25", "0.4" };
+        const char *ends[]   = { "1",   "0.9", "0.75", "0.5", "1",   "1",    "1"   };
+        for (size_t k = 0; k < sizeof(starts) / sizeof(starts[0]); k++) {
             void *inst = api->create_instance(".", NULL);
             check(inst != NULL, "test32: create_instance");
             api->set_param(inst, "input_routing", "A");
@@ -1985,7 +2007,8 @@ int main(void) {
             api->set_param(inst, "loopA_chaos", "0");
             api->set_param(inst, "loopA_wow", "0");
             api->set_param(inst, "loopA_send", "0");
-            api->set_param(inst, "loopA_trim", trims[k]);
+            api->set_param(inst, "loopA_start", starts[k]);
+            api->set_param(inst, "loopA_end",   ends[k]);
 
             int worst = 0, prev = 0, have = 0;
             for (int b = 0; b < 600; b++) {
@@ -2501,6 +2524,75 @@ int main(void) {
               "runs out exactly when the loop does");
         check(seen['-'], "test39: then goes to '-' when it is gone");
         check(monotonic, "test39: the countdown only ever counts DOWN");
+    }
+
+
+    /* ---- Test 40: DUST is one knob writing both surface noises.
+     *
+     * LEFT leads with VINYL, RIGHT with Hiss, and past halfway each brings
+     * the other in behind it, so a full turn either way is all of one and
+     * HALF the other — never one alone:
+     *
+     *      -1.0        -0.5         0        +0.5        +1.0
+     *   VINYL 1.0   VINYL 0.5       -            -      VINYL 0.5
+     *   Hiss  0.5   Hiss  0        ---     Hiss  0.5    Hiss  1.0
+     *
+     * Asserted against the two underlying params, which still exist and
+     * still work — DUST writes them rather than replacing them, so they
+     * remain LFO and CC targets. ---- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        record_short_ramp_loop_a(api, inst, SAMPLE_RATE / 2);
+        api->set_param(inst, "loopA_decay_rate", "300");
+
+        static const struct { const char *set; double vinyl; double hiss; } pts[] = {
+            { "-1",    1.00, 0.50 },
+            { "-0.75", 0.75, 0.25 },
+            { "-0.5",  0.50, 0.00 },
+            { "-0.25", 0.25, 0.00 },
+            { "0",     0.00, 0.00 },
+            { "0.25",  0.00, 0.25 },
+            { "0.5",   0.00, 0.50 },
+            { "0.75",  0.25, 0.75 },
+            { "1",     0.50, 1.00 },
+        };
+        for (size_t k = 0; k < sizeof(pts)/sizeof(pts[0]); k++) {
+            char v[32];
+            api->set_param(inst, "loopA_dust", pts[k].set);
+            api->get_param(inst, "loopA_chaos", v, sizeof(v));
+            check(fabs(atof(v) - pts[k].vinyl) < 0.005,
+                  "test40: DUST sets VINYL to the curve — full left is all of it, "
+                  "and it only appears on the right past halfway");
+            api->get_param(inst, "loopA_hiss", v, sizeof(v));
+            check(fabs(atof(v) - pts[k].hiss) < 0.005,
+                  "test40: ...and Hiss to its mirror image");
+        }
+
+        /* Symmetric: the two ends are the same shape, swapped. */
+        {
+            char a1[32], b1[32], a2[32], b2[32];
+            api->set_param(inst, "loopA_dust", "-0.8");
+            api->get_param(inst, "loopA_chaos", a1, sizeof(a1));
+            api->get_param(inst, "loopA_hiss",  b1, sizeof(b1));
+            api->set_param(inst, "loopA_dust", "0.8");
+            api->get_param(inst, "loopA_chaos", a2, sizeof(a2));
+            api->get_param(inst, "loopA_hiss",  b2, sizeof(b2));
+            check(fabs(atof(a1) - atof(b2)) < 0.005 && fabs(atof(b1) - atof(a2)) < 0.005,
+                  "test40: the knob is symmetric — -x and +x are the same pair "
+                  "with the two noises swapped");
+        }
+
+        /* Clamps, and reads back what was written. */
+        {
+            char v[32];
+            api->set_param(inst, "loopA_dust", "5");
+            api->get_param(inst, "loopA_dust", v, sizeof(v));
+            check(atof(v) <= 1.0, "test40: DUST clamps at +1");
+            api->set_param(inst, "loopA_dust", "-5");
+            api->get_param(inst, "loopA_dust", v, sizeof(v));
+            check(atof(v) >= -1.0, "test40: DUST clamps at -1");
+        }
+        api->destroy_instance(inst);
     }
 
     /* The PASS line used to print unconditionally and the runner grepped

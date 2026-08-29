@@ -395,7 +395,14 @@ static const speed_option_t SPEED_OPTIONS[] = {
  * addressing one end at a time is what is actually available, and it
  * matches Tone and Speed, which are centred the same way.
  * --------------------------------------------------------------------- */
-#define TRIM_MAX_FRACTION     0.90f   /* most of the take either end can take */
+/* START and END are independent fractions of the take, 0..1, replacing the
+ * single bipolar Trim (2026-08-29). Trim could only ever cut ONE end —
+ * centre was the whole take, left moved the start, right moved the end —
+ * so the two could not be set at once, which is the thing a loop editor is
+ * for. TRIM_MAX_FRACTION (0.90, the most either end could take) is gone
+ * with it: two ends bounded by a minimum SPAN need no per-end cap. */
+#define START_DEFAULT_FRAC    0.0f
+#define END_DEFAULT_FRAC      1.0f
 /* The join has to be crossfaded, not faded to silence. close_recording
  * fades the take's two ENDS down so an untrimmed loop wraps silence into
  * silence, but a trimmed loop wraps somewhere in the middle of the take
@@ -408,7 +415,6 @@ static const speed_option_t SPEED_OPTIONS[] = {
  * TRIM_XFADE_SECONDS after it, and the head resumes past that. Nothing is
  * silent, and the two sides meet at equal level. */
 #define TRIM_XFADE_SECONDS    0.006f
-#define TRIM_DEFAULT_PCT      50.0f
 /* Headroom above unity, so a memory can be pushed rather than only pulled
  * back. The module's output limiter is what keeps that safe. */
 #define MAX_LOOP_VOLUME       2.0f
@@ -843,7 +849,18 @@ typedef struct {
      * arrive with a swoop. Advanced once per block — one octave over five
      * seconds is 0.007 semitones per block, far below anything audible as
      * a step, and it keeps an exp2f out of the sample loop. */
-    float trim_pct;                 /* 0..100, 50 = the whole take */
+    float start_frac, end_frac;     /* 0..1 of the take; lo/hi below derive */
+    /* DUST: one knob for both surface noises, bipolar (2026-08-29).
+     *
+     * LEFT leads with VINYL, RIGHT leads with Hiss, and past halfway each
+     * brings the other in behind it — so the far ends are "all of one and
+     * half the other" rather than one alone. Two knobs became one to free a
+     * cell for END, and the pairing is honest: they are the same failure of
+     * the same medium, and were nearly always reached for together.
+     *
+     * The two underlying params still exist and still work; this writes
+     * BOTH of them. */
+    float dust;                     /* -1 = full VINYL, +1 = full Hiss */
     double trim_lo, trim_hi;        /* per block, in frames */
     float tone;                     /* -1 .. +1, 0 = bypass */
     float tone_a;                   /* per-block coefficient */
@@ -1390,7 +1407,9 @@ static void init_loop(loop_engine_t *loop, uint32_t rng_seed) {
     loop->freq_semis = 0.0f;
     loop->freq_log_cur = loop->freq_log_target = loop->freq_log_step = 0.0f;
     loop->speed_eff = 1.0f;   /* log_cur/target are 0 from the memset = 1x */
-    loop->trim_pct  = TRIM_DEFAULT_PCT;
+    loop->start_frac = START_DEFAULT_FRAC;
+    loop->end_frac   = END_DEFAULT_FRAC;
+    loop->dust       = 0.0f;
     /* Age starts FULL (300s, the max — was 180s/3min); Warp/Darken/Hiss/
      * VINYL start at minimum, UNTOUCHED (flavor_ramp_t's zeroed target/step/
      * touched from the memset above is exactly that — nothing to set here).
@@ -1510,10 +1529,15 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
 
         {
             double len = (double)loop->recorded_length;
-            float t = clampf((loop->trim_pct - 50.0f) / 50.0f, -1.0f, 1.0f);
-            double lo = 0.0, hi = len;
-            if (t < 0.0f)      lo = len * (double)(-t * TRIM_MAX_FRACTION);
-            else if (t > 0.0f) hi = len * (double)(1.0f - t * TRIM_MAX_FRACTION);
+            double lo = len * (double)clampf(loop->start_frac, 0.0f, 1.0f);
+            double hi = len * (double)clampf(loop->end_frac,   0.0f, 1.0f);
+            /* Ordering and the minimum span are enforced HERE, not in
+             * set_param, so both knobs stay free to turn anywhere. Clamping
+             * the stored value instead makes a knob snap back under the
+             * hand, which reads as a broken control rather than as a limit.
+             * END below START collapses to a minimum-length loop at START
+             * rather than swapping them, so the two knobs never trade
+             * meaning mid-turn. */
             if (hi - lo < (double)MIN_RECORDED_FRAMES) hi = lo + (double)MIN_RECORDED_FRAMES;
             if (hi > len) { hi = len; lo = hi - (double)MIN_RECORDED_FRAMES; }
             if (lo < 0.0) lo = 0.0;
@@ -2083,7 +2107,9 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                     /* Everything that belonged to the take goes with it, so
                      * the next one starts from a known place rather than
                      * inheriting the settings that took the last one apart. */
-                    loop->trim_pct   = TRIM_DEFAULT_PCT;
+                    loop->start_frac = START_DEFAULT_FRAC;
+                    loop->end_frac   = END_DEFAULT_FRAC;
+                    loop->dust       = 0.0f;
                     loop->tone       = 0.0f;
                     loop->decay_rate = MAX_DECAY_RATE;      /* Age back to 100% */
                     loop->speed_mul  = 1.0f;
@@ -2304,8 +2330,36 @@ static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *
         /* wire key stays "chaos" (see the crackle field comment on
          * loop_engine_t) — this is VINYL's live value. */
         flavor_ramp_set_param(&loop->crackle_ramp, &loop->applied_crackle, (float)atof(val), loop->memory, loop->decay_rate, loop->frozen);
-    } else if (strcmp(suffix, "trim") == 0) {
-        loop->trim_pct = clampf((float)atof(val) * 100.0f, 0.0f, 100.0f);
+    } else if (strcmp(suffix, "start") == 0) {
+        loop->start_frac = clampf((float)atof(val), 0.0f, 1.0f);
+        return;
+    } else if (strcmp(suffix, "end") == 0) {
+        loop->end_frac = clampf((float)atof(val), 0.0f, 1.0f);
+        return;
+    } else if (strcmp(suffix, "dust") == 0) {
+        /* One knob, both noises. LEFT leads with VINYL, RIGHT with Hiss,
+         * and past halfway each brings the other in behind it:
+         *
+         *      -1.0        -0.5         0        +0.5        +1.0
+         *   VINYL 1.0   VINYL 0.5       -            -      VINYL 0.5
+         *   Hiss  0.5   Hiss  0        ---     Hiss  0.5    Hiss  1.0
+         *
+         * so a full turn either way is all of one and half of the other,
+         * never one alone. Written through flavor_ramp_set_param for BOTH,
+         * exactly as the individual knobs do — the slew, the freeze check
+         * and the reset-on-death all keep working without knowing this
+         * control exists. */
+        float x = clampf((float)atof(val), -1.0f, 1.0f);
+        loop->dust = x;
+        float t     = fabsf(x);
+        float lead  = t;
+        float trail = (t > 0.5f) ? (t - 0.5f) : 0.0f;
+        float vinyl = (x < 0.0f) ? lead  : trail;
+        float hiss  = (x < 0.0f) ? trail : lead;
+        flavor_ramp_set_param(&loop->crackle_ramp, &loop->applied_crackle, vinyl,
+                              loop->memory, loop->decay_rate, loop->frozen);
+        flavor_ramp_set_param(&loop->hiss_ramp, &loop->applied_hiss, hiss,
+                              loop->memory, loop->decay_rate, loop->frozen);
         return;
     } else if (strcmp(suffix, "tone") == 0) {
         loop->tone = clampf((float)atof(val), -1.0f, 1.0f);
@@ -2346,14 +2400,16 @@ static int loop_get_param(const loop_engine_t *loop, uint64_t total_frames, cons
     if (strcmp(suffix, "freq") == 0)        return snprintf(buf, len, "%.2f", loop->freq_semis);
     if (strcmp(suffix, "hiss") == 0)        return snprintf(buf, len, "%.3f", loop->hiss_ramp.target);
     if (strcmp(suffix, "chaos") == 0)       return snprintf(buf, len, "%.3f", loop->crackle_ramp.target);
-    if (strcmp(suffix, "trim") == 0) {
-        /* The NUMBER, not "START 54"/"END 46"/"FULL". A float knob takes
-         * its dial position from this value, so returning text left the
-         * pointer parked at zero while the knob was actually centred —
-         * reported from the device. The direction is legible from the
-         * dial's own position either side of centre. */
-        return snprintf(buf, len, "%.4f", (double)(loop->trim_pct / 100.0f));
-    }
+    /* Numbers, not text. A float knob takes its dial position from this
+     * value, so returning something like "START 54" left the pointer parked
+     * at zero while the knob was elsewhere — reported from the device back
+     * when this was one bipolar Trim. */
+    if (strcmp(suffix, "start") == 0)
+        return snprintf(buf, len, "%.4f", (double)loop->start_frac);
+    if (strcmp(suffix, "end") == 0)
+        return snprintf(buf, len, "%.4f", (double)loop->end_frac);
+    if (strcmp(suffix, "dust") == 0)
+        return snprintf(buf, len, "%.4f", (double)loop->dust);
     if (strcmp(suffix, "tone") == 0)
         return snprintf(buf, len, "%.4f", (double)loop->tone);
     if (strcmp(suffix, "speed") == 0) {
@@ -2647,7 +2703,11 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
     }
 
     if (strcmp(key, "chain_params") == 0) {
-        char json[8192];
+        /* 12288, raised from 8192 when START/END/DUST took the contract to
+         * 7276 bytes — 916 short of truncating. snprintf truncates SILENTLY
+         * and the module would simply stop having a parameter contract, so
+         * the headroom check in test0 fails well before this does. */
+        char json[12288];
         int pos = snprintf(json, sizeof(json), "[");
         /* The speed option list, quoted, built from SPEED_OPTIONS so the
          * declared order and the setter's index fallback cannot drift. */
@@ -2723,13 +2783,16 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                  * with it so a UI reading this metadata doesn't lie. Drive
                  * (saturation) keeps a nonzero default (0.25) since it's
                  * still the v1 auto-chase knob, not a v2 ramp. */
-                ",{\"key\":\"loop%c_trim\",\"name\":\"Trim\",\"type\":\"float\","
-                  /* A "%" unit is SCALED BY 100 for display, as loopX_volume's
-                   * 0..2 showing as 0..200% proves. Declaring 0..100 here
-                   * made the readout say "Trim, 5000%" on the device. */
-                  "\"min\":0,\"max\":1,\"default\":0.5,\"step\":0.01,\"unit\":\"%%\","
+                /* A "%" unit is SCALED BY 100 for display, as loopX_volume's
+                 * 0..2 showing as 0..200% proves. Declaring 0..100 here is
+                 * what once put "Trim, 5000%" on the device. */
+                ",{\"key\":\"loop%c_start\",\"name\":\"START\",\"type\":\"float\","
+                  "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01,\"unit\":\"%%\","
                   "\"display_format\":\"%%.0f\"}"
-                ",{\"key\":\"loop%c_decay_rate\",\"name\":\"Age\",\"type\":\"float\","
+                ",{\"key\":\"loop%c_end\",\"name\":\"END\",\"type\":\"float\","
+                  "\"min\":0,\"max\":1,\"default\":1,\"step\":0.01,\"unit\":\"%%\","
+                  "\"display_format\":\"%%.0f\"}"
+",{\"key\":\"loop%c_decay_rate\",\"name\":\"Age\",\"type\":\"float\","
                   "\"min\":3,\"max\":300,\"default\":300,\"step\":1,\"unit\":\"s\"}"
                 ",{\"key\":\"loop%c_send\",\"name\":\"Space\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01,\"unit\":\"%%\","
@@ -2758,11 +2821,23 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                 ",{\"key\":\"loop%c_chaos\",\"name\":\"VINYL\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}"
                 ",{\"key\":\"loop%c_hiss\",\"name\":\"Hiss\",\"type\":\"float\","
-                  "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}",
-                /* FREQ is the 6th %c, and its two %.0f follow it. */
-                c, c, c, c, c, c,
+                  "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}"
+                /* DUST drives VINYL and Hiss together and is what the page
+                 * shows. The two are still declared above, off the page, so
+                 * they remain LFO and CC targets and can still be driven
+                 * individually — removing them would have taken working
+                 * modulation away to save two lines of JSON. */
+                ",{\"key\":\"loop%c_dust\",\"name\":\"DUST\",\"type\":\"float\","
+                  "\"min\":-1,\"max\":1,\"default\":0,\"step\":0.01,\"unit\":\"%%\","
+                  "\"display_format\":\"%%.0f\"}",
+                /* Ten %c, in the order the entries appear above:
+                 * start, end, decay_rate, send, state, wow, freq, chaos,
+                 * hiss, dust — with FREQ's two %.0f after the SEVENTH.
+                 * Note "%%.0f" in a display_format is a literal and takes
+                 * no argument; only the bare "%.0f" pair does. */
+                c, c, c, c, c, c, c,
                 (double)-FREQ_SEMITONE_RANGE, (double)FREQ_SEMITONE_RANGE,
-                c, c);
+                c, c, c);
         }
         /* Glitch. The five 0..1 knobs declare a "%" unit, which the UI
          * SCALES BY 100 for display — declaring 0..100 here is what once
@@ -2884,8 +2959,21 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                    * Age / Trim / FREQ / ECHO and Space sits with the
                    * flavours underneath, which is where it belonged: it is
                    * a send, not a structural property of the take. */
-                  "\"loop%c_decay_rate\",\"loop%c_trim\",\"loop%c_freq\",\"loop%c_state\","
-                  "\"loop%c_wow\",\"loop%c_send\",\"loop%c_chaos\",\"loop%c_hiss\"]}",
+                  /* Reorganised 2026-08-29 so the loop's SHAPE is on top and
+                   * what is happening to it underneath:
+                   *
+                   *   Age  START  END    ECHO
+                   *   FREQ Warp   Space  DUST
+                   *
+                   * START and END replace the single bipolar Trim, which
+                   * could only ever cut ONE end at a time — the two could
+                   * not be set at once, which is the thing a loop editor is
+                   * for. The cell they needed came from merging VINYL and
+                   * Hiss into DUST: the same failure of the same medium,
+                   * nearly always reached for together, so one bipolar knob
+                   * costs less than the editor it buys. */
+                  "\"loop%c_decay_rate\",\"loop%c_start\",\"loop%c_end\",\"loop%c_state\","
+                  "\"loop%c_freq\",\"loop%c_wow\",\"loop%c_send\",\"loop%c_dust\"]}",
                 c, c, c, c, c, c, c, c, c, c);
         }
         /* Glitch last, after the four memories — it is the end of the
