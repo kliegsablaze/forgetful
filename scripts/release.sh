@@ -37,6 +37,24 @@ if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
     exit 1
 fi
 
+# The PREVIOUS release's workflow commits release.json to main, so the
+# remote is routinely one commit ahead of a local tree that has not fetched
+# since. Left to git, that surfaces as a rejected push and a wall of hint:
+# text AFTER the suite has already run. Rebase onto it first, then re-run
+# the suite against what will actually be tagged — a rebase can conflict or
+# change behaviour, and tagging something the tests never saw is the whole
+# thing this script exists to prevent.
+echo "Fetching origin..."
+git fetch origin --quiet
+if [ -n "$(git log --oneline HEAD..origin/main 2>/dev/null)" ]; then
+    echo "  origin/main is ahead — rebasing onto it:"
+    git log --oneline HEAD..origin/main | sed 's/^/    /'
+    git rebase origin/main || {
+        echo "Rebase failed. Resolve it, then run this again." >&2
+        exit 1
+    }
+fi
+
 echo "Running the test suite..."
 bash tests/run.sh >/dev/null || { echo "Tests failed — not releasing." >&2; exit 1; }
 echo "  suite passed"
