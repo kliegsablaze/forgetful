@@ -80,20 +80,40 @@ Black-box bench test driving the module's public v2 plugin API
 (`create_instance`/`set_param`/`get_param`/`process_block`) exactly as
 Schwung's chain host would.
 
-## Installing for local development
+## Development
+
+Two tracks, deliberately separate. Nothing you do on the first one reaches
+anybody else.
+
+### Local: your Move
 
 ```bash
 MOVE_HOST=ableton@move.local ./scripts/install.sh
 ```
 
-Builds (if needed) and copies `forgetful.so` + `module.json` straight to a
-connected Move over SSH, staging and atomically renaming so it is safe to
-run against a loaded slot. For normal use, install from the Module Store —
-see [Installing](#installing) above.
+Builds if `dist/` is behind `src/`, then copies `forgetful.so` +
+`module.json` straight to a connected Move over SSH — staging and
+atomically renaming, so it is safe to run against a slot that is currently
+loaded. Reload the module on the device to pick it up.
 
-## Releasing
+**This touches nothing else.** No catalog, no GitHub release, no Module
+Store. Run it as often as you like.
 
-1. Bump `version` in `src/module.json`.
-2. `git commit`, then `git tag vX.Y.Z && git push origin main --tags`.
-3. GitHub Actions cross-compiles, creates the release, and updates
-   `release.json` on `main` automatically.
+Bump the patch version in `src/module.json` as you go, so the number the
+Manager shows is the build actually running. A hand-deployed version sits
+*ahead* of the released one, so the Module Store offers no update and does
+not nag.
+
+### Release: everybody else
+
+```bash
+./scripts/release.sh
+```
+
+The only thing here that reaches Schwung Manager. It refuses to run on a
+dirty tree or a failing suite, tags the version in `src/module.json`,
+pushes the branch **before** the tag, and lets GitHub Actions cross-compile,
+attach the tarball and update `release.json` on `main`. The catalog picks
+that up within a few minutes.
+
+Run it when you decide to ship — never as a side effect of anything else.
