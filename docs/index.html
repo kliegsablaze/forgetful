@@ -129,7 +129,7 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
   <p class="lede">One live input, sent by hand into whichever of four tape
     memories you choose. The moment you move on, it starts <b>forgetting
     itself</b> — until it's silent, and ready to hold something new.</p>
-  <p class="chips">forgetful <b>v0.4.6</b> · audio_fx · requires <b>schwung</b></p>
+  <p class="chips">forgetful <b>v0.5.1</b> · audio_fx · requires <b>schwung</b></p>
 </header>
 
 <section id="what">
@@ -235,8 +235,11 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
   <div class="flist">
     <div class="frow"><div><div class="fn">Age</div></div>
       <div class="fd">How long, in seconds, this memory takes to go from full to gone — 3 seconds to 5 minutes. Everything else is a rate of damage; this is the clock they run against.</div></div>
-    <div class="frow"><div><div class="fn">Trim</div></div>
-      <div class="fd">Picks how much of the recording plays. Centre plays all of it. Turn <b>left</b> and the loop starts later, cutting the front; turn <b>right</b> and it ends earlier, cutting the back. Either way it gets shorter. Nothing is erased — turn back and it returns. The part you've cut off also stops wearing out, since it isn't passing the head, so bring it back later and it sounds as it did when you cut it.</div></div>
+    <div class="frow"><div><div class="fn">START</div></div>
+      <div class="fd">Where in the recording the loop begins, from the head at 0% to the tail at 100%.</div></div>
+    <div class="frow"><div><div class="fn">END</div></div>
+      <div class="fd">Where it stops. Together these two are the loop editor: set both and you play any window of the take you like, not just a shorter version of it.
+      <br>Nothing is erased — move them back and what you cut returns. The part outside the window also stops wearing out, since it isn't passing the head, so bring it back later and it sounds as it did when you cut it. Pull END below START and you get the shortest loop the take allows, sitting at START.</div></div>
     <div class="frow"><div><div class="fn">FREQ</div></div>
       <div class="fd">Fine tuning for this memory, a full octave either way in semitones. Its own control, separate from Main's Speed — Speed picks the octave, FREQ trims it. Use it to tune one memory against another <i>by ear while they both play</i>: it lands where you put it in about a twentieth of a second, so you can hear the beating disappear as you turn.<br><b>It's a tape speed, not a pitch shifter.</b> Tune a memory down and it also runs longer, so two loops coming into tune will drift apart in time. That's the trade for it sounding like tape rather than smeared.</div></div>
     <div class="frow"><div><div class="fn">ECHO</div></div>
@@ -245,10 +248,11 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
       <div class="fd">A transport that can't hold its speed: a slow sag, a faster flutter, and a drift that wanders at random so it never settles into a pattern. Gentle settings sag; the top of the travel is a machine coming apart.</div></div>
     <div class="frow"><div><div class="fn">Space</div></div>
       <div class="fd">How much of this memory goes into the shared reverb at the end of the chain — a long, dense tail of about six and a half seconds. Post-fader, so turning the memory down turns its send down too. The reverb keeps ringing after you pull the send back.</div></div>
-    <div class="frow"><div><div class="fn">VINYL</div></div>
-      <div class="fd">The medium losing material. A gate that takes the <b>quiet</b> parts first, so what survives is peaks surfacing out of silence rather than holes punched at random — and because it's written back onto the tape, what goes is gone. It bites harder the older the take gets. Freeze stops it.</div></div>
-    <div class="frow"><div><div class="fn">Hiss</div></div>
-      <div class="fd">Noise printed onto the tape on every pass, so it accumulates: inaudible on a fresh take, and by the end the loudest thing left. That's the arc — the music disappears and the noise floor doesn't.</div></div>
+    <div class="frow"><div><div class="fn">DUST</div></div>
+      <div class="fd">Both of the medium's surface noises on one knob, because they are the same failure of the same tape and you almost always want them together.
+      <br>Turn <b>left</b> for <b>VINYL</b> — the medium losing material. A gate that takes the <b>quiet</b> parts first, so what survives is peaks surfacing out of silence rather than holes punched at random. It bites harder the older the take gets.
+      <br>Turn <b>right</b> for <b>Hiss</b> — noise printed onto the tape on every pass, so it accumulates. Present from the moment you turn it and louder as the take dies: the music disappears and the noise floor doesn't.
+      <br>Past halfway each end brings the other in behind it, so a full turn either way is all of one and <i>half</i> of the other — never one alone. Both are written back onto the tape, so what they do is permanent. Freeze stops both.</div></div>
   </div>
 </section>
 
@@ -294,7 +298,7 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
   <h2 class="sh">The knobs set a rate, not a sound</h2>
   <div class="cols">
     <div>
-      <p>Warp, VINYL and Hiss aren't effects laid over the top.
+      <p>Warp and DUST aren't effects laid over the top.
       Each pass, what comes off the tape is written back onto it, so the
       next pass reads the damaged version — the same gentle filter applied
       three hundred times, the same faint noise printed three hundred
@@ -309,7 +313,7 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
       smoothly to where you put it, no jump, no long glide. Nothing waits
       for a take to end.</p>
       <p>Because the tape is really being rewritten, it can't be undone.
-      Turn Hiss up, hear it, turn it back down — the noise that was
+      Turn DUST up, hear it, turn it back down — the noise that was
       already printed stays printed. The only thing that restores a memory
       is recording a new one, and when a memory finally goes silent every
       knob on it returns to its default so the next take starts clean.</p>
@@ -317,11 +321,11 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
       memory is frozen: it holds exactly as ruined as it was.</p>
     </div>
   </div>
-  <div class="note"><b>Only three of the eight are damage.</b> Warp, VINYL
-  and Hiss are written back onto the tape. Age is the clock they run
-  against; Trim chooses which part plays; FREQ tunes it; Space is a send;
-  ECHO just reports. Those, and Tone on the Sound page, are all
-  reversible — turn them back and what they hid comes back.</div>
+  <div class="note"><b>Only two of the eight are damage.</b> Warp and DUST
+  are written back onto the tape. Age is the clock they run against; START
+  and END choose which part plays; FREQ tunes it; Space is a send; ECHO
+  just reports. Those, and Tone on the Sound page, are all reversible —
+  turn them back and what they hid comes back.</div>
 </section>
 
 <!-- ============================ IDEAS ============================ -->
@@ -336,9 +340,9 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
     <div class="frow"><div><div class="fn">Mismatched clocks</div></div>
       <div class="fd">Set each memory's Age wildly differently — one at 10 seconds, one at the full 300 — so the mix is always somewhere between freshly caught and almost gone, and it never settles into a repeating cycle.</div></div>
     <div class="frow"><div><div class="fn">Catch and hold</div></div>
-      <div class="fd">Record a chord or a held note, let Hiss and Warp work into it for a while, then Freeze right where it sounds best. A strange, stable pad you can play over for as long as you like.</div></div>
+      <div class="fd">Record a chord or a held note, let DUST and Warp work into it for a while, then Freeze right where it sounds best. A strange, stable pad you can play over for as long as you like.</div></div>
     <div class="frow"><div><div class="fn">One clean, one crumbling</div></div>
-      <div class="fd">Push VINYL and Hiss hard on one memory as a textured bed, and leave another completely untouched. The mix always has one steady voice sitting next to one that's coming apart.</div></div>
+      <div class="fd">Push DUST hard on one memory as a textured bed, and leave another completely untouched. The mix always has one steady voice sitting next to one that's coming apart.</div></div>
     <div class="frow"><div><div class="fn">Build it in layers</div></div>
       <div class="fd">Record a beat, let it loop a few times, then overdub a second pass on top instead of starting over. Keep adding without ever losing what was already there.</div></div>
     <div class="frow"><div><div class="fn">Tune them to each other</div></div>
@@ -351,7 +355,7 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
 </section>
 
 <footer>
-  FORGETFUL · v0.4.6 · audio_fx · by <a href="https://github.com/kliegsablaze">kliegs</a><br>
+  FORGETFUL · v0.5.1 · audio_fx · by <a href="https://github.com/kliegsablaze">kliegs</a><br>
   Built on <a href="https://github.com/charlesvestal/schwung">schwung</a> by Charles Vestal, for the Ableton Move.
 </footer>
 
@@ -679,24 +683,24 @@ buildDevice(document.getElementById("soundDevice"),{
 /* ---------------- A loop page ---------------- */
 buildDevice(document.getElementById("loopDevice"),{
   id:"loop", title:"Loop A", pageIndex:2, pageCount:7,
-  hint:"Age, Trim, FREQ and ECHO on top; how it comes apart, and its reverb send, underneath.",
+  hint:"Age, START and END on top — the shape of the loop; what is happening to it underneath.",
   cells:[
     {label:"Age",kind:"dial",idx:2,values:[{t:"3s",f:0},{t:"60s",f:.2},{t:"300s",f:1}],
       desc:v=>"Age — knob 1. This memory takes "+v.t+" to go from full to gone."},
-    {label:"Trim",kind:"dial",idx:1,values:[{t:"START",f:.2},{t:"FULL",f:.5},{t:"END",f:.8}],
-      desc:v=>v.t==="FULL"?"Trim — knob 2, centred: the whole recording plays.":(v.t==="START"?"Trim — knob 2, turned left: the loop starts later, so the front is cut. Nothing is erased.":"Trim — knob 2, turned right: the loop ends earlier, so the back is cut.")},
-    {label:"FREQ",kind:"dial",idx:0,values:[{t:"0.0",f:.5},{t:"-4.5",f:.31},{t:"+7.0",f:.79}],
-      desc:v=>"FREQ — knob 3, at "+v.t+" semitones. Fine tuning, an octave either way, for matching this memory to another by ear. A tape speed, so tuning down also runs it longer."},
+    {label:"START",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"25%",f:.25},{t:"60%",f:.6}],
+      desc:v=>"START — knob 2, at "+v.t+". Where the loop begins in the recording. Nothing is erased; move it back and the front returns."},
+    {label:"END",kind:"dial",idx:0,values:[{t:"100%",f:1},{t:"75%",f:.75},{t:"40%",f:.4}],
+      desc:v=>"END — knob 3, at "+v.t+". Where the loop stops. With START it makes any window of the take, not just a shorter version of it."},
     {label:"ECHO",kind:"box",idx:0,values:["-","9","F","O"],
       desc:v=>"ECHO — knob 4, read-only. This memory alone: "+(v==="-"?"empty.":(v==="F"?"frozen.":(v==="O"?"overdubbing.":"about 90% left.")))},
+    {label:"FRQ",kind:"dial",idx:0,values:[{t:"0.0",f:.5},{t:"-4.5",f:.31},{t:"+7.0",f:.79}],
+      desc:v=>"FREQ — knob 5, at "+v.t+" semitones. Fine tuning, an octave either way, for matching this memory to another by ear. A tape speed, so tuning down also runs it longer. (The screen shortens it to FRQ.)"},
     {label:"Warp",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"35%",f:.35},{t:"100%",f:1}],
-      desc:v=>"Warp — knob 5, at "+v.t+". Wow, flutter and a random drift, so it never settles into a pattern."},
+      desc:v=>"Warp — knob 6, at "+v.t+". Wow, flutter and a random drift, so it never settles into a pattern."},
     {label:"Space",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"40%",f:.4},{t:"100%",f:1}],
-      desc:v=>"Space — knob 6, at "+v.t+". How much of this memory feeds the shared reverb at the end of the chain."},
-    {label:"VINYL",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"50%",f:.5},{t:"100%",f:1}],
-      desc:v=>"VINYL — knob 7, at "+v.t+". A gate that takes the quiet parts first, permanently. Freeze stops it."},
-    {label:"Hiss",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"50%",f:.5},{t:"100%",f:1}],
-      desc:v=>"Hiss — knob 8, at "+v.t+". Printed onto the tape each pass, so it builds: silent at first, the last thing left at the end."},
+      desc:v=>"Space — knob 7, at "+v.t+". How much of this memory feeds the shared reverb at the end of the chain."},
+    {label:"DUST",kind:"dial",idx:1,values:[{t:"0",f:.5},{t:"-70",f:.15},{t:"+70",f:.85}],
+      desc:v=>v.t==="0"?"DUST — knob 8, centred: neither noise.":(v.t.charAt(0)==="-"?"DUST — knob 8, turned left to "+v.t+": mostly VINYL, the gate eating the quiet parts, with a little Hiss behind it.":"DUST — knob 8, turned right to "+v.t+": mostly Hiss, printed on every pass, with a little VINYL behind it.")},
   ]
 });
 
