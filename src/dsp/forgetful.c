@@ -239,6 +239,22 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
 #define DRIFT_HOLD_SECONDS 0.9f   /* how often the drift picks a new target */
 #define DRIFT_GLIDE_SECONDS 0.35f /* how long it takes to get there */
 
+/* Hiss is scaled by `age`, so it grows as the take dies. Straight `age`
+ * meant a FRESH take had essentially none — measured, hiss at the knob's
+ * maximum was quieter on a young loop than VINYL was (22.8 against 35.1),
+ * so the right half of DUST did nothing audible until the loop was already
+ * well gone. Reported 2026-08-29 as "vinyl seems much more prominent when
+ * turning the knob on either side".
+ *
+ * The floor keeps the arc — hiss still builds toward the end, which is the
+ * whole point of it — while making the knob do something the moment it is
+ * turned. */
+#define HISS_AGE_FLOOR        0.15f  /* measured: fresh-take hiss 22.8 -> 104.3,
+                                      * against VINYL's 35.1. 0.20 and a
+                                      * ceiling raise were tried and both put a
+                                      * FRESH take above the old maximum, which
+                                      * is the "too loud" this knob has already
+                                      * been reported for twice. */
 #define HISS_CEILING          0.020f /* Raised back up 2026-08-27, when hiss
                                       * stopped being constant and started
                                       * scaling with `age`: this is now the
@@ -1852,7 +1868,8 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * accordingly: it is now only ever reached at full decay
                  * with the knob at maximum. */
                 float hiss_amount = clampf(loop->applied_hiss, 0.0f, 1.0f)
-                                    * HISS_CEILING * age;
+                                    * HISS_CEILING
+                                    * (HISS_AGE_FLOOR + (1.0f - HISS_AGE_FLOOR) * age);
                 float noise_l = rng_bipolar(&loop->rng_state);
                 float noise_r = rng_bipolar(&loop->rng_state);
                 loop->hiss_lp_l += HISS_COLOR_COEFF * (noise_l - loop->hiss_lp_l);
