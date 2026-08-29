@@ -400,6 +400,105 @@ static void record_full_buffer_loop_a_noise(audio_fx_api_v2_t *api, void *inst) 
     }
 }
 
+
+/* Records a rising RAMP into loop A — a signal whose direction of travel is
+ * readable from the output. A tone cannot do this: played backwards it is
+ * the same tone, which is exactly why the reverse speeds needed a different
+ * fixture rather than a reuse of measure_pitch. */
+static void record_full_buffer_loop_a_ramp(audio_fx_api_v2_t *api, void *inst) {
+    int16_t buf[BLOCK_FRAMES * 2];
+    long remaining = TEST_BUFFER_CAPACITY_FRAMES;
+    long n = 0;
+    api->set_param(inst, "input_routing", TEST_ROUTE_A);
+    press_record(api, inst);
+    while (remaining > 0) {
+        int f = remaining < BLOCK_FRAMES ? (int)remaining : BLOCK_FRAMES;
+        for (int i = 0; i < f; i++) {
+            double t = (double)(n % 4410) / 4410.0;     /* 10 Hz ramp */
+            int16_t v = (int16_t)((t * 2.0 - 1.0) * 0.5 * 32767.0);
+            buf[i * 2] = v; buf[i * 2 + 1] = v;
+            n++;
+        }
+        api->process_block(inst, buf, f);
+        remaining -= f;
+    }
+}
+
+/* Mean SIGN of the first difference, ignoring the ramp's own reset jumps.
+ * +1 = playing forward, -1 = backwards. */
+static double measure_slope_sign(audio_fx_api_v2_t *api, void *inst, int blocks) {
+    int16_t buf[BLOCK_FRAMES * 2];
+    long up = 0, down = 0;
+    int16_t prev = 0; int have = 0;
+    for (int b = 0; b < blocks; b++) {
+        fill_silence(buf, BLOCK_FRAMES);
+        api->process_block(inst, buf, BLOCK_FRAMES);
+        for (int i = 0; i < BLOCK_FRAMES; i++) {
+            int16_t v = buf[i * 2];
+            if (have) {
+                int d = v - prev;
+                if (d > -2000 && d < 2000) { if (d > 0) up++; else if (d < 0) down++; }
+            }
+            prev = v; have = 1;
+        }
+    }
+    long tot = up + down;
+    return tot ? (double)(up - down) / (double)tot : 0.0;
+}
+
+
+/* Largest sample-to-sample step in the output. The loop seam is the only
+ * discontinuity a smooth recorded tone can produce, so this is how a
+ * missing join crossfade shows up. */
+static int measure_max_step(audio_fx_api_v2_t *api, void *inst, int blocks) {
+    int16_t buf[BLOCK_FRAMES * 2];
+    int worst = 0, prev = 0, have = 0;
+    for (int b = 0; b < blocks; b++) {
+        fill_silence(buf, BLOCK_FRAMES);
+        api->process_block(inst, buf, BLOCK_FRAMES);
+        for (int i = 0; i < BLOCK_FRAMES; i++) {
+            int v = buf[i * 2];
+            if (have) { int d = v - prev; if (d < 0) d = -d; if (d > worst) worst = d; }
+            prev = v; have = 1;
+        }
+    }
+    return worst;
+}
+
+
+/* ONE monotonic ramp over a SHORT (~1s) take, closed by hand.
+ *
+ * Two things this fixture has to get right, both learned the hard way:
+ *
+ *  - ONE ramp, so the loop seam is a guaranteed FULL-SCALE discontinuity
+ *    and nothing else in the signal is. On a 440Hz sine the seam joins two
+ *    points at a similar phase, so deleting the reverse join crossfade
+ *    moved the worst sample step only 805 -> 867 and the test passed. On a
+ *    ramp the same deletion reads 153 -> 13384.
+ *
+ *  - SHORT, because TEST_BUFFER_CAPACITY_FRAMES is SIXTY SECONDS. A test
+ *    that fills the buffer and then plays for ten seconds never reaches the
+ *    seam at all, so it cannot see a join bug in either direction. That is
+ *    why the first version of this still passed with the wrap deleted.
+ */
+static void record_short_ramp_loop_a(audio_fx_api_v2_t *api, void *inst, long frames) {
+    int16_t buf[BLOCK_FRAMES * 2];
+    long remaining = frames, n = 0;
+    api->set_param(inst, "input_routing", TEST_ROUTE_A);
+    press_record(api, inst);
+    while (remaining > 0) {
+        int f = remaining < BLOCK_FRAMES ? (int)remaining : BLOCK_FRAMES;
+        for (int i = 0; i < f; i++) {
+            int16_t v = (int16_t)(((double)n / (double)frames * 2.0 - 1.0) * 0.5 * 32767.0);
+            buf[i * 2] = v; buf[i * 2 + 1] = v;
+            n++;
+        }
+        api->process_block(inst, buf, f);
+        remaining -= f;
+    }
+    api->set_param(inst, "master_record", "STOP!");   /* close it here */
+}
+
 /* Constant-value counterpart, for test14: fills the whole buffer with one
  * unchanging sample value, so the recorded content is known exactly
  * (`value`, every index). */
@@ -2245,6 +2344,119 @@ int main(void) {
         }
     }
 
+
+    /* ---- Test 38: the speed enum, including the reverse half.
+     *
+     * Requested order (2026-08-29): default 1x, LEFT stepping 1/2, 1/4, 2x
+     * and RIGHT stepping -1x, -1/2, -1/4, -2x. That puts 2x at the FAR LEFT,
+     * which looks like a mistake and is not — it is what was asked for, so
+     * the order is pinned literally here rather than left to look tidy.
+     *
+     * Nothing pinned the old option list at all, so the enum could have been
+     * rewritten silently. ---- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        /* 8192, not 4096: chain_params is ~6KB and the module REFUSES a
+         * short buffer rather than truncating, so an undersized one here
+         * returns -1 and leaves the buffer uninitialised — which reads as
+         * a contract failure that is really a test bug. */
+        char b[8192];
+        int cpn = api->get_param(inst, "chain_params", b, sizeof(b));
+        check(cpn > 0, "test38: chain_params fits the buffer this test gives it");
+        check(strstr(b, "\"options\":[\"2x\",\"1/4\",\"1/2\",\"1x\","
+                        "\"-1x\",\"-1/2\",\"-1/4\",\"-2x\"],\"default\":\"1x\"") != NULL,
+              "test38: speed options are declared in the requested knob order, "
+              "1x default");
+
+        static const char *opts[] = { "2x","1/4","1/2","1x","-1x","-1/2","-1/4","-2x" };
+        for (int i = 0; i < 8; i++) {
+            char v[16];
+            api->set_param(inst, "loopA_speed", opts[i]);
+            api->get_param(inst, "loopA_speed", v, sizeof(v));
+            check(strcmp(v, opts[i]) == 0,
+                  "test38: each speed round-trips by NAME — the host learns the "
+                  "wire format from get_param, and 1x/-1x differ only in sign");
+            snprintf(v, sizeof(v), "%d", i);
+            api->set_param(inst, "loopA_speed", v);
+            api->get_param(inst, "loopA_speed", v, sizeof(v));
+            check(strcmp(v, opts[i]) == 0,
+                  "test38: ...and by INDEX, in the same order a patch writes");
+        }
+        api->destroy_instance(inst);
+
+        /* Direction, measured off a ramp. A tone played backwards is the
+         * same tone, so this needs a signal with a direction. */
+        static const struct { const char *opt; double want; } dirs[] = {
+            { "1x", 1.0 }, { "-1x", -1.0 }, { "2x", 1.0 },
+            { "-2x", -1.0 }, { "1/2", 1.0 }, { "-1/2", -1.0 },
+        };
+        for (size_t k = 0; k < sizeof(dirs)/sizeof(dirs[0]); k++) {
+            void *in2 = api->create_instance(".", NULL);
+            record_full_buffer_loop_a_ramp(api, in2);
+            api->set_param(in2, "loopA_decay_rate", "300");
+            api->set_param(in2, "loopA_wow", "0");
+            api->set_param(in2, "loopA_speed", dirs[k].opt);
+            run_silence(api, in2, 7L * SAMPLE_RATE);   /* past the 5s glide */
+            double sl = measure_slope_sign(api, in2, 300);
+            check(sl * dirs[k].want > 0.7,
+                  "test38: this speed plays the direction its name says");
+            api->destroy_instance(in2);
+        }
+
+        /* The flip COASTS THROUGH ZERO. Direction is a linear ramp, separate
+         * from the log2 magnitude glide, precisely because log2 cannot cross
+         * zero — so 1x -> -1x, where the magnitude never changes, would
+         * otherwise be a discontinuity at full speed. Measured: the tone
+         * falls 440 -> ~44 -> 440 across the five seconds. */
+        {
+            void *in2 = api->create_instance(".", NULL);
+            float phase = 0.0f;
+            record_full_buffer_loop_a(api, in2, &phase);
+            api->set_param(in2, "loopA_decay_rate", "300");
+            api->set_param(in2, "loopA_wow", "0");
+            api->set_param(in2, "loopA_speed", "1x");
+            run_silence(api, in2, 7L * SAMPLE_RATE);
+            double before = measure_pitch(api, in2, 200);
+
+            api->set_param(in2, "loopA_speed", "-1x");
+            run_silence(api, in2, (long)(2.4 * SAMPLE_RATE));  /* mid-flip */
+            double middle = measure_pitch(api, in2, 200);
+
+            run_silence(api, in2, 6L * SAMPLE_RATE);           /* settled */
+            double after = measure_pitch(api, in2, 200);
+
+            check(before > 300.0, "test38: baseline pitch measurable before the flip");
+            check(middle < before * 0.35,
+                  "test38: mid-flip the tape has nearly STOPPED — the direction "
+                  "ramp passes through zero rather than cutting across it");
+            check(after > before * 0.8,
+                  "test38: and it comes back up to speed on the far side");
+            api->destroy_instance(in2);
+        }
+
+        /* The reverse JOIN is crossfaded, like the forward one.
+         *
+         * Deleting the reverse wrap does not stop the loop wrapping — the
+         * pre-read clamp still catches an out-of-window head — so the only
+         * evidence is a CLICK at the seam, and the bound has to be tight
+         * enough to see it. Measured on this fixture: 153 with the
+         * crossfade, 13384 without. The forward direction is 147 either
+         * way, which is what says the number is the seam and not the ramp. */
+        {
+            void *in2 = api->create_instance(".", NULL);
+            record_short_ramp_loop_a(api, in2, SAMPLE_RATE);   /* ~1s: wraps often */
+            api->set_param(in2, "loopA_decay_rate", "300");
+            api->set_param(in2, "loopA_wow", "0");
+            api->set_param(in2, "loopA_speed", "-1x");
+            run_silence(api, in2, 7L * SAMPLE_RATE);
+            int step = measure_max_step(api, in2, 1200);
+            check(step < 1000,
+                  "test38: running backwards, the loop seam is crossfaded — a "
+                  "full-scale ramp joins smoothly instead of clicking");
+            api->destroy_instance(in2);
+        }
+    }
+
     /* The PASS line used to print unconditionally and the runner grepped
      * for it, so a suite with real failures still read as green — the same
      * class of blind pass signal as the earlier `grep -c "^FAIL"` that
@@ -2262,6 +2474,6 @@ int main(void) {
            "medium, Darken compounding, VINYL gate, level regulator, splice "
            "fade, Sound page, send reverb, speed glide, Tone filter, Trim + "
            "join crossfade, reset on take death, Glitch page, absent-key "
-           "contract, Tone ordering, FREQ)\n");
+           "contract, Tone ordering, FREQ, reverse speeds)\n");
     return 0;
 }

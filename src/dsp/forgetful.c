@@ -355,6 +355,29 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * long enough that a detent is a slide and not a step, short enough that
  * the pitch is where you put it by the time you have heard it against the
  * other loop. */
+/* Playback speeds, in DECLARED OPTION ORDER — the order a knob steps
+ * through, left to right. Requested (2026-08-29) as: default 1x, then
+ * LEFT 1/2, 1/4, 2x and RIGHT -1x, -1/2, -1/4, -2x. So 1x sits at index
+ * SPEED_DEFAULT_INDEX with three options below it and four above.
+ *
+ * One table, read by loop_set_param, loop_get_param and chain_params
+ * alike: the option strings, the index fallback and the readout used to be
+ * three hand-kept lists that agreed by luck, and a knob turn writes the
+ * NAME while a patch writes the INDEX, so a disagreement is silent. */
+typedef struct { const char *label; float mul; float dir; } speed_option_t;
+static const speed_option_t SPEED_OPTIONS[] = {
+    { "2x",   2.0f,  1.0f },
+    { "1/4",  0.25f, 1.0f },
+    { "1/2",  0.5f,  1.0f },
+    { "1x",   1.0f,  1.0f },   /* default */
+    { "-1x",  1.0f, -1.0f },
+    { "-1/2", 0.5f, -1.0f },
+    { "-1/4", 0.25f,-1.0f },
+    { "-2x",  2.0f, -1.0f },
+};
+#define SPEED_OPTION_COUNT ((int)(sizeof(SPEED_OPTIONS)/sizeof(SPEED_OPTIONS[0])))
+#define SPEED_DEFAULT_INDEX 3
+
 #define FREQ_SEMITONE_RANGE  12.0f
 #define FREQ_GLIDE_SECONDS    0.05f
 
@@ -836,6 +859,18 @@ typedef struct {
      * purpose, and a five-second FREQ cannot be tuned by ear. */
     float freq_semis;
     float freq_log_cur, freq_log_target, freq_log_step;
+    /* Playback DIRECTION, separate from the magnitude glide above.
+     *
+     * It has to be separate: the magnitude glide interpolates in log2, and
+     * log2 cannot represent zero, let alone a negative. So direction is its
+     * own LINEAR ramp from +1 to -1, which means a flip passes THROUGH
+     * ZERO — the tape slows to a stop and then runs backwards, rather than
+     * cutting to the other direction at full speed. That is both what a
+     * tape machine does and the only way the transition is not a lurch.
+     *
+     * 1x -> -1x is the case that proves it: the magnitude never changes, so
+     * without this the whole gesture would be a discontinuity. */
+    float speed_dir_cur, speed_dir_target, speed_dir_step;
     float speed_eff;   /* exp2(speed_log_cur), what the read head uses */
     float speed_mul;   /* 0.25 / 0.5 / 1 / 2: the SELECTED rate, so the loop shifts
                         * by octaves and its pass takes proportionally
@@ -1350,6 +1385,8 @@ static void init_loop(loop_engine_t *loop, uint32_t rng_seed) {
     /* MUST come after the memset: zero here means a read rate of zero and
      * no loop ever plays at all. */
     loop->speed_mul = 1.0f;
+    loop->speed_dir_cur = loop->speed_dir_target = 1.0f;
+    loop->speed_dir_step = 0.0f;
     loop->freq_semis = 0.0f;
     loop->freq_log_cur = loop->freq_log_target = loop->freq_log_step = 0.0f;
     loop->speed_eff = 1.0f;   /* log_cur/target are 0 from the memset = 1x */
@@ -1532,6 +1569,12 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 moved = 1;
             }
             if (moved) loop->speed_eff = exp2f(loop->speed_log_cur + loop->freq_log_cur);
+            if (loop->speed_dir_cur != loop->speed_dir_target) {
+                float move = loop->speed_dir_step * (float)frames;
+                float diff = loop->speed_dir_target - loop->speed_dir_cur;
+                if (fabsf(diff) <= move || move <= 0.0f) loop->speed_dir_cur = loop->speed_dir_target;
+                else loop->speed_dir_cur += (diff > 0.0f) ? move : -move;
+            }
         }
     }
 
@@ -1608,8 +1651,12 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 float mod = (sinf(loop->wow_phase) * WOW_MOD_DEPTH +
                              loop->warp_drift * DRIFT_MOD_DEPTH) * w +
                             sinf(loop->flutter_phase) * FLUTTER_MOD_DEPTH * w * w;
+                /* Warp modulates the MAGNITUDE; direction multiplies what
+                 * comes out, so a reversed loop wows exactly as a forward
+                 * one does rather than having its wow inverted. */
                 double speed = 1.0 + mod;
                 speed *= (double)loop->speed_eff;
+                speed *= (double)loop->speed_dir_cur;
 
                 loop->wow_phase += 2.0f * PI_F * WOW_RATE_HZ / SAMPLE_RATE;
                 if (loop->wow_phase >= 2.0f * PI_F) loop->wow_phase -= 2.0f * PI_F;
@@ -1623,7 +1670,12 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * there rather than at the recorded ends */
                 if (loop->read_head < loop->trim_lo ||
                     loop->read_head >= loop->trim_hi) {
-                    loop->read_head = loop->trim_lo;
+                    /* Out of the window — after a Trim move, or on the
+                     * first pass. Re-enter at the edge we are travelling
+                     * AWAY from, or the head lands on the boundary it is
+                     * about to cross and wraps every sample. */
+                    loop->read_head = (speed < 0.0) ? (loop->trim_hi - 1.0)
+                                                    : loop->trim_lo;
                 }
                 int idx0 = (int)floor(loop->read_head);
                 if (idx0 >= loop->recorded_length) idx0 %= loop->recorded_length;
@@ -1680,8 +1732,16 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                     int16_t add_l = (int16_t)(raw_dry_l * loop->overdub_gain);
                     int16_t add_r = (int16_t)(raw_dry_r * loop->overdub_gain);
                     int from = loop->overdub_last_idx;
+                    /* Span in the DIRECTION OF TRAVEL. Forward-only
+                     * arithmetic makes a reversed head look like it jumped
+                     * almost a whole take forward, which trips the
+                     * OVERDUB_MAX_FILL guard and degrades to one write per
+                     * sample — so at -2x every other frame is skipped and
+                     * the overdub is written with holes in it. */
+                    int back = (speed < 0.0);
                     int span = (from < 0) ? 0
-                             : (idx0 - from + loop->recorded_length)
+                             : (back ? (from - idx0 + loop->recorded_length)
+                                     : (idx0 - from + loop->recorded_length))
                                    % loop->recorded_length;
                     /* span == 0 with a valid `from` means the read head has
                      * not reached a new frame yet (speed < 1) — the frame is
@@ -1692,7 +1752,9 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                         overdub_add(loop, idx0, add_l, add_r);
                     } else {
                         for (int k = 1; k <= span; k++) {
-                            overdub_add(loop, (from + k) % loop->recorded_length,
+                            int at = back ? (from - k + loop->recorded_length * 2)
+                                          : (from + k);
+                            overdub_add(loop, at % loop->recorded_length,
                                         add_l, add_r);
                         }
                     }
@@ -1709,10 +1771,18 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                     double span = loop->trim_hi - loop->trim_lo;
                     double xf = TRIM_XFADE_SECONDS * SAMPLE_RATE;
                     if (xf > span * 0.25) xf = span * 0.25;
-                    double dist = loop->trim_hi - loop->read_head;
+                    /* The join is at whichever edge we are APPROACHING, and
+                     * the material blended in is the far edge we are about to
+                     * land on. Keyed on the signed rate, not on trim_hi:
+                     * running backwards, the seam is at trim_lo and the
+                     * incoming material is the tail. */
+                    double dist = (speed < 0.0) ? (loop->read_head - loop->trim_lo)
+                                                : (loop->trim_hi - loop->read_head);
                     if (xf >= 1.0 && dist < xf) {
                         float al, ar;
-                        take_read(loop, loop->trim_lo + (xf - dist), &al, &ar);
+                        double at = (speed < 0.0) ? (loop->trim_hi - (xf - dist))
+                                                  : (loop->trim_lo + (xf - dist));
+                        take_read(loop, at, &al, &ar);
                         float g = (float)(dist / xf);
                         raw_l = raw_l * g + al * (1.0f - g);
                         raw_r = raw_r * g + ar * (1.0f - g);
@@ -1831,13 +1901,19 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * the take stays exactly as ruined as it was. */
                 if (loop->medium_active && !loop->frozen) {
                     int from = loop->medium_last_idx;
+                    int mback = (speed < 0.0);
                     int span = (from < 0) ? 0
-                             : (idx0 - from + loop->recorded_length) % loop->recorded_length;
+                             : (mback ? (from - idx0 + loop->recorded_length)
+                                      : (idx0 - from + loop->recorded_length))
+                                   % loop->recorded_length;
                     if (from < 0 || span == 0 || span > OVERDUB_MAX_FILL) {
                         medium_write(loop, idx0, med_l, med_r);
                     } else {
-                        for (int k = 1; k <= span; k++)
-                            medium_write(loop, (from + k) % loop->recorded_length, med_l, med_r);
+                        for (int k = 1; k <= span; k++) {
+                            int at = mback ? (from - k + loop->recorded_length * 2)
+                                           : (from + k);
+                            medium_write(loop, at % loop->recorded_length, med_l, med_r);
+                        }
                     }
                     loop->medium_last_idx = idx0;
                 } else {
@@ -1910,18 +1986,29 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
 
                 /* advance + wrap */
                 loop->read_head += speed;
-                if (loop->read_head >= loop->trim_hi) {
+                {
                     double span = loop->trim_hi - loop->trim_lo;
                     double xf = TRIM_XFADE_SECONDS * SAMPLE_RATE;
                     if (xf > span * 0.25) xf = span * 0.25;
                     if (xf < 0.0) xf = 0.0;
-                    /* resume past the head material the crossfade has
-                     * already played, or it is heard twice */
-                    loop->read_head = loop->trim_lo + xf +
-                                      (loop->read_head - loop->trim_hi);
+                    if (loop->read_head >= loop->trim_hi) {
+                        /* resume past the head material the crossfade has
+                         * already played, or it is heard twice */
+                        loop->read_head = loop->trim_lo + xf +
+                                          (loop->read_head - loop->trim_hi);
+                    } else if (loop->read_head < loop->trim_lo) {
+                        /* Mirror of the above, running the other way: come
+                         * back in below the tail material the crossfade has
+                         * already played. */
+                        loop->read_head = loop->trim_hi - xf -
+                                          (loop->trim_lo - loop->read_head);
+                    } else {
+                        goto no_wrap;
+                    }
                     if (loop->read_head < loop->trim_lo) loop->read_head = loop->trim_lo;
                     if (loop->read_head >= loop->trim_hi) loop->read_head = loop->trim_lo;
                 }
+                no_wrap: ;
 
                 /* Continuous, wall-clock decay: memory drains at a constant
                  * rate over decay_rate SECONDS, one sample at a time,
@@ -2000,6 +2087,8 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                     loop->tone       = 0.0f;
                     loop->decay_rate = MAX_DECAY_RATE;      /* Age back to 100% */
                     loop->speed_mul  = 1.0f;
+                    loop->speed_dir_cur = loop->speed_dir_target = 1.0f;
+                    loop->speed_dir_step = 0.0f;
                     loop->speed_log_cur = loop->speed_log_target = 0.0f;
                     loop->freq_semis = 0.0f;
                     loop->freq_log_cur = loop->freq_log_target = 0.0f;
@@ -2223,18 +2312,27 @@ static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *
         /* The option STRINGS are matched before any index fallback,
          * because atoi("1x") is 1 — the normal-speed spelling would
          * otherwise select the second option. */
-        if (strcmp(val, "1/4") == 0)      loop->speed_mul = 0.25f;
-        else if (strcmp(val, "1/2") == 0) loop->speed_mul = 0.5f;
-        else if (strcmp(val, "1x") == 0)  loop->speed_mul = 1.0f;
-        else if (strcmp(val, "2x") == 0)  loop->speed_mul = 2.0f;
-        else {
-            /* index fallback, in the declared option order */
-            static const float by_index[4] = { 0.25f, 0.5f, 1.0f, 2.0f };
-            int ix = atoi(val);
-            loop->speed_mul = by_index[(ix < 0) ? 0 : (ix > 3) ? 3 : ix];
+        int ix = -1;
+        for (int i = 0; i < SPEED_OPTION_COUNT; i++) {
+            if (strcmp(val, SPEED_OPTIONS[i].label) == 0) { ix = i; break; }
         }
+        if (ix < 0) {
+            /* index fallback, in the declared option order */
+            ix = atoi(val);
+            if (ix < 0) ix = 0;
+            if (ix >= SPEED_OPTION_COUNT) ix = SPEED_OPTION_COUNT - 1;
+        }
+        loop->speed_mul = SPEED_OPTIONS[ix].mul;
         loop->speed_log_target = log2f(loop->speed_mul);
         loop->speed_log_step   = fabsf(loop->speed_log_target - loop->speed_log_cur) /
+                                 (SPEED_GLIDE_SECONDS * SAMPLE_RATE);
+        /* Direction glides over the SAME five seconds and LINEARLY, so a
+         * flip coasts through zero: the tape slows, stops, and picks up
+         * backwards. 1x -> -1x is the case that needs it — the magnitude
+         * never changes, so without the ramp the whole gesture would be a
+         * discontinuity at full speed. */
+        loop->speed_dir_target = SPEED_OPTIONS[ix].dir;
+        loop->speed_dir_step   = fabsf(loop->speed_dir_target - loop->speed_dir_cur) /
                                  (SPEED_GLIDE_SECONDS * SAMPLE_RATE);
         return;
     }
@@ -2259,9 +2357,16 @@ static int loop_get_param(const loop_engine_t *loop, uint64_t total_frames, cons
     if (strcmp(suffix, "speed") == 0) {
         /* Names the CURRENT state, like Freeze — it is a setting you can
          * see rather than an action, and four of them sit side by side. */
-        return snprintf(buf, len, loop->speed_mul <= 0.3f  ? "1/4"
-                                : loop->speed_mul <= 0.6f  ? "1/2"
-                                : loop->speed_mul >= 1.5f  ? "2x" : "1x");
+        /* Read back off the same table, matching magnitude AND direction —
+         * a magnitude-only compare cannot tell 1x from -1x, and the host
+         * learns this enum's wire format from what comes back here. */
+        for (int i = 0; i < SPEED_OPTION_COUNT; i++) {
+            if (fabsf(SPEED_OPTIONS[i].mul - loop->speed_mul) < 0.01f &&
+                SPEED_OPTIONS[i].dir * loop->speed_dir_target > 0.0f) {
+                return snprintf(buf, len, "%s", SPEED_OPTIONS[i].label);
+            }
+        }
+        return snprintf(buf, len, "%s", SPEED_OPTIONS[SPEED_DEFAULT_INDEX].label);
     }
 
     if (strcmp(suffix, "status") == 0) {
@@ -2542,6 +2647,14 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
     if (strcmp(key, "chain_params") == 0) {
         char json[8192];
         int pos = snprintf(json, sizeof(json), "[");
+        /* The speed option list, quoted, built from SPEED_OPTIONS so the
+         * declared order and the setter's index fallback cannot drift. */
+        char speed_opts[128];
+        int so = 0;
+        for (int i = 0; i < SPEED_OPTION_COUNT; i++) {
+            so += snprintf(speed_opts + so, sizeof(speed_opts) - so,
+                           "%s\"%s\"", i ? "," : "", SPEED_OPTIONS[i].label);
+        }
         pos += snprintf(json + pos, sizeof(json) - pos,
             "{\"key\":\"input_routing\",\"name\":\"Send\",\"type\":\"enum\","
               "\"options\":[\"A\",\"B\",\"C\",\"D\"],\"default\":0}");
@@ -2551,12 +2664,13 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                   "\"min\":0,\"max\":1.5,\"default\":%.2f,\"step\":0.01,\"unit\":\"%%\","
                   "\"display_format\":\"%%.0f\"}"
                 ",{\"key\":\"loop%c_speed\",\"name\":\"%c\",\"type\":\"enum\","
-                  "\"options\":[\"1/4\",\"1/2\",\"1x\",\"2x\"],\"default\":\"1x\"}"
+                  "\"options\":[%s],\"default\":\"%s\"}"
                 ",{\"key\":\"loop%c_tone\",\"name\":\"%c\",\"type\":\"float\","
                   "\"min\":-1,\"max\":1,\"default\":0,\"step\":0.01,\"unit\":\"%%\","
                   "\"display_format\":\"%%.0f\"}",
                 LOOP_LETTERS[i], LOOP_LETTERS[i], (double)DEFAULT_LOOP_VOLUME,
                 LOOP_LETTERS[i], LOOP_LETTERS[i],
+                speed_opts, SPEED_OPTIONS[SPEED_DEFAULT_INDEX].label,
                 LOOP_LETTERS[i], LOOP_LETTERS[i]);
         }
         /* "enum", not "string": a read-only string routes through the opaque
