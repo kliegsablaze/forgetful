@@ -1053,7 +1053,7 @@ int main(void) {
         api->set_param(src, "loopA_send", "0.9");
         api->set_param(src, "loopA_trim", "0.2");
         api->set_param(src, "loopA_tone", "-0.7");
-        api->set_param(src, "loopA_speed", "1/4");
+        api->set_param(src, "loopA_speed", "1/4x");
         api->set_param(src, "loopA_volume", "1.4");
 
         char blob[4096];
@@ -1656,10 +1656,10 @@ int main(void) {
         /* "1x" must not read back as a division: atoi("1x") is 1, so an
          * index-only parse selects the wrong option. */
         char v[32];
-        /* Declared low-to-high so the encoder lands where the fingers
-         * expect: 1x is home, left goes down an octave at a time, right
-         * goes up. */
-        const char *want[4] = { "1/4", "1/2", "1x", "2x" };
+        /* Order and the full eight-option set are test38's business; this
+         * only pins that a NAME round-trips, which is what "1x" vs atoi
+         * is about. */
+        const char *want[4] = { "1/4x", "1/2x", "1x", "2x" };
         for (int k = 0; k < 4; k++) {
             api->set_param(inst, "loopA_speed", want[k]);
             api->get_param(inst, "loopA_speed", v, sizeof(v));
@@ -1745,7 +1745,7 @@ int main(void) {
         double at_rest = measure_pitch(api, inst, 40);
         check(at_rest > 400.0 && at_rest < 480.0, "test28: starts near 440Hz");
 
-        api->set_param(inst, "loopA_speed", "1/2");
+        api->set_param(inst, "loopA_speed", "1/2x");
         double just_after = measure_pitch(api, inst, 40);   /* ~120ms */
         check(just_after > at_rest * 0.9,
               "test28: it does not snap — a moment after the write the loop "
@@ -1848,7 +1848,7 @@ int main(void) {
         api->set_param(inst, "loopA_trim", "0.2");
         api->set_param(inst, "loopA_tone", "-0.7");
         api->set_param(inst, "loopA_send", "0.9");
-        api->set_param(inst, "loopA_speed", "1/4");
+        api->set_param(inst, "loopA_speed", "1/4x");
         api->set_param(inst, "loopA_volume", "1.4");
         run_silence(api, inst, BLOCK_FRAMES * 20);
 
@@ -2363,12 +2363,12 @@ int main(void) {
         char b[8192];
         int cpn = api->get_param(inst, "chain_params", b, sizeof(b));
         check(cpn > 0, "test38: chain_params fits the buffer this test gives it");
-        check(strstr(b, "\"options\":[\"2x\",\"1/4\",\"1/2\",\"1x\","
-                        "\"-1x\",\"-1/2\",\"-1/4\",\"-2x\"],\"default\":\"1x\"") != NULL,
+        check(strstr(b, "\"options\":[\"2x\",\"1/4x\",\"1/2x\",\"1x\","
+                        "\"-1x\",\"-1/2x\",\"-1/4x\",\"-2x\"],\"default\":\"1x\"") != NULL,
               "test38: speed options are declared in the requested knob order, "
               "1x default");
 
-        static const char *opts[] = { "2x","1/4","1/2","1x","-1x","-1/2","-1/4","-2x" };
+        static const char *opts[] = { "2x","1/4x","1/2x","1x","-1x","-1/2x","-1/4x","-2x" };
         for (int i = 0; i < 8; i++) {
             char v[16];
             api->set_param(inst, "loopA_speed", opts[i]);
@@ -2388,7 +2388,7 @@ int main(void) {
          * same tone, so this needs a signal with a direction. */
         static const struct { const char *opt; double want; } dirs[] = {
             { "1x", 1.0 }, { "-1x", -1.0 }, { "2x", 1.0 },
-            { "-2x", -1.0 }, { "1/2", 1.0 }, { "-1/2", -1.0 },
+            { "-2x", -1.0 }, { "1/2x", 1.0 }, { "-1/2x", -1.0 },
         };
         for (size_t k = 0; k < sizeof(dirs)/sizeof(dirs[0]); k++) {
             void *in2 = api->create_instance(".", NULL);

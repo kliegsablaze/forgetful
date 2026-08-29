@@ -366,14 +366,14 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * NAME while a patch writes the INDEX, so a disagreement is silent. */
 typedef struct { const char *label; float mul; float dir; } speed_option_t;
 static const speed_option_t SPEED_OPTIONS[] = {
-    { "2x",   2.0f,  1.0f },
-    { "1/4",  0.25f, 1.0f },
-    { "1/2",  0.5f,  1.0f },
-    { "1x",   1.0f,  1.0f },   /* default */
-    { "-1x",  1.0f, -1.0f },
-    { "-1/2", 0.5f, -1.0f },
-    { "-1/4", 0.25f,-1.0f },
-    { "-2x",  2.0f, -1.0f },
+    { "2x",    2.0f,  1.0f },
+    { "1/4x",  0.25f, 1.0f },
+    { "1/2x",  0.5f,  1.0f },
+    { "1x",    1.0f,  1.0f },   /* default */
+    { "-1x",   1.0f, -1.0f },
+    { "-1/2x", 0.5f, -1.0f },
+    { "-1/4x", 0.25f,-1.0f },
+    { "-2x",   2.0f, -1.0f },
 };
 #define SPEED_OPTION_COUNT ((int)(sizeof(SPEED_OPTIONS)/sizeof(SPEED_OPTIONS[0])))
 #define SPEED_DEFAULT_INDEX 3
