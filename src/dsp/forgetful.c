@@ -2167,7 +2167,15 @@ static int master_loops_overview_text(const inst_t *s, char *buf, int len) {
     for (int i = 0; i < NUM_LOOPS; i++) {
         code[i] = loop_status_char(&s->loops[i], s->total_frames);
     }
-    return snprintf(buf, len, "%c%c_%c%c", code[0], code[1], code[2], code[3]);
+    /* Four characters, no separator. The '_' was a WRAP HINT: at
+     * LABEL_CHARS 4 the cell could not hold four codes on one line, so the
+     * value broke into two centred rows of two and the underscore chose
+     * where. Schwung 1.0 widened the cell — the four fit on one line — and
+     * the hint became a visible gap: "-- --" where "----" was meant.
+     *
+     * Nothing downstream parses this; it is a readout (access "read"), so
+     * dropping a character changes no wire contract. */
+    return snprintf(buf, len, "%c%c%c%c", code[0], code[1], code[2], code[3]);
 }
 
 /* Returns the loop index (0..3) and the suffix after "loopX_" if `key`

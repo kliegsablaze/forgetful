@@ -798,8 +798,8 @@ int main(void) {
 
         char buf[16];
         int n = api->get_param(inst, "master_loops_overview", buf, sizeof(buf));
-        check(n == 5, "test8: overview is exactly 5 characters (A+B, '_', C+D)");
-        check(strcmp(buf, "--_--") == 0, "test8: fresh instance reads all-idle");
+        check(n == 4, "test8: overview is exactly 4 characters, one per loop — the\n              '_' wrap hint went with Schwung 1.0's wider cell (2026-08-29)");
+        check(strcmp(buf, "----") == 0, "test8: fresh instance reads all-idle");
 
         api->set_param(inst, "input_routing", TEST_ROUTE_A);
         press_record(api, inst);
@@ -807,14 +807,14 @@ int main(void) {
         run_tone(api, inst, BLOCK_FRAMES * 20, 0.5f, 440.0f, &phase);
         check(strcmp(status_of(api, inst, 'A'), "Recording") == 0, "test8: A is Recording");
         n = api->get_param(inst, "master_loops_overview", buf, sizeof(buf));
-        check(n == 5 && strcmp(buf, "R-_--") == 0, "test8: overview shows A recording, rest idle");
+        check(n == 4 && strcmp(buf, "R---") == 0, "test8: overview shows A recording, rest idle");
 
         /* Switch routing to B: closes A into Looping at memory=1.0 - the top
          * decile, digit '9' (the decile scheme has no distinct digit for
          * "100%" versus "90-99%", by design - see the header comment). */
         api->set_param(inst, "input_routing", TEST_ROUTE_B);
         n = api->get_param(inst, "master_loops_overview", buf, sizeof(buf));
-        check(n == 5 && strcmp(buf, "9-_--") == 0, "test8: overview shows A's fresh-close decile, rest idle");
+        check(n == 4 && strcmp(buf, "9---") == 0, "test8: overview shows A's fresh-close decile, rest idle");
 
         /* B now records too: overview reflects both loops at once. */
         press_record(api, inst);
@@ -822,7 +822,7 @@ int main(void) {
         run_tone(api, inst, BLOCK_FRAMES * 6, 0.5f, 880.0f, &phase_b);
         check(strcmp(status_of(api, inst, 'B'), "Recording") == 0, "test8: B is Recording");
         n = api->get_param(inst, "master_loops_overview", buf, sizeof(buf));
-        check(n == 5 && strcmp(buf, "9R_--") == 0, "test8: overview reflects both A and B simultaneously");
+        check(n == 4 && strcmp(buf, "9R--") == 0, "test8: overview reflects both A and B simultaneously");
 
         api->destroy_instance(inst);
     }
