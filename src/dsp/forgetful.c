@@ -208,7 +208,24 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
  * fed through the write-back: the compounding is the slow evolution now,
  * so the knob itself should just behave like a knob. Reported from the
  * device as flavour knobs jumping "to some huge amount" on first move. */
-#define FLAVOUR_SLEW_SECONDS  0.040f
+/* Flavour knob smoothing, as a TIME CONSTANT for a one-pole, not the
+ * duration of a linear ramp.
+ *
+ * It was a linear ramp that completed in 40ms and then stopped dead. Knob
+ * writes do not arrive every 40ms — the shadow UI is IPC-bound, and a hand
+ * turning an encoder produces them far more sparsely than that — so between
+ * writes the value sat perfectly FLAT. Measured at a write every 150ms:
+ * 40ms of movement, 110ms frozen, repeat. A staircase, and the ear hears
+ * the corners. Reported from the device 2026-08-30 as jumpiness.
+ *
+ * A one-pole never arrives, so it never stops: there is no hard corner
+ * where movement ends, whatever the write spacing. 60ms reaches 63% in one
+ * write interval at a brisk turn and ~92% by 200ms, so it still tracks the
+ * hand without lagging behind it. */
+#define FLAVOUR_SLEW_TAU_S    0.060f
+/* 1 - exp(-1/(tau*SR)), the per-sample one-pole coefficient. Constant, so
+ * it is folded at compile time rather than recomputed per write. */
+#define FLAVOUR_SLEW_A        0.00037786f   /* = 1-exp(-1/(0.060*44100)) */
 
 #define FROZEN_GLIDE_SECONDS 0.15f
 
@@ -755,8 +772,10 @@ static void flavor_ramp_set_param(flavor_ramp_t *ramp, float *applied, float new
     new_value = clampf(new_value, 0.0f, 1.0f);
     ramp->target = new_value;
     ramp->touched = 1;
-    ramp->step = fabsf(new_value - *applied) /
-                 (FLAVOUR_SLEW_SECONDS * (float)SAMPLE_RATE);
+    /* No per-write step to compute any more: the coefficient is constant,
+     * so the smoother's behaviour no longer depends on how far the value
+     * happened to be from its target when the write landed. */
+    (void)applied;
 }
 
 /* Everything genuinely per-loop. Timing decisions inside a loop_engine_t
@@ -792,7 +811,7 @@ typedef struct {
     /* Currently-audible value for each of the five flavor knobs — what
      * every DSP stage actually reads, not the raw knob/target value. Drive
      * chases this toward `saturation` at a constant rate every sample (see
-     * the LOOPING case); the other four are advanced by chase() using their
+     * the LOOPING case); the others are advanced by the one-pole using their
      * own flavor_ramp_t's `.step`, which only changes on a set_param write. */
     float applied_wow, applied_hiss, applied_crackle;
 
@@ -1022,20 +1041,8 @@ typedef struct {
 
 /* ---- small helpers ---- */
 
-/* Moves `current` toward `target` by at most `step` (either direction) — the
- * per-sample update for every applied_* flavor amount. Turning a knob live
- * only moves `target`; `current` still glides there at the same fixed rate,
- * so the sound never jumps. */
-static float chase(float current, float target, float step) {
-    if (current < target) {
-        current += step;
-        if (current > target) current = target;
-    } else if (current > target) {
-        current -= step;
-        if (current < target) current = target;
-    }
-    return current;
-}
+/* chase() went with the linear ramp (2026-08-30) — the flavour smoother
+ * is a one-pole now and advances inline. */
 
 /* Adds a wet sample (float, roughly -1..1) onto a RAW int16 dry sample and
  * clamps in integer space. Deliberately not dry_float+wet_float->int16: an
@@ -2100,9 +2107,9 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                         loop->memory -= step;
                     } else {
                     }
-                    loop->applied_wow     = chase(loop->applied_wow,     loop->wow_ramp.target,     loop->wow_ramp.step);
-                    loop->applied_hiss    = chase(loop->applied_hiss,    loop->hiss_ramp.target,    loop->hiss_ramp.step);
-                    loop->applied_crackle = chase(loop->applied_crackle, loop->crackle_ramp.target, loop->crackle_ramp.step);
+                    loop->applied_wow     += FLAVOUR_SLEW_A * (loop->wow_ramp.target     - loop->applied_wow);
+                    loop->applied_hiss    += FLAVOUR_SLEW_A * (loop->hiss_ramp.target    - loop->applied_hiss);
+                    loop->applied_crackle += FLAVOUR_SLEW_A * (loop->crackle_ramp.target - loop->applied_crackle);
                 }
                 if (loop->memory <= 0.0f) {
                     loop->memory = 0.0f;

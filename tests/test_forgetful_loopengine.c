@@ -2595,6 +2595,46 @@ int main(void) {
         api->destroy_instance(inst);
     }
 
+
+    /* ---- Test 41: the flavour smoother ASYMPTOTES, it does not complete.
+     *
+     * The bug this pins: the smoother was a linear ramp that finished in a
+     * fixed 40ms and then stopped dead. Knob writes do not arrive every
+     * 40ms, so between them the value sat perfectly FLAT — measured at a
+     * write every 150ms, 40ms of movement and 110ms frozen, over and over.
+     * A staircase, and the ear hears the corners. Reported from the device
+     * 2026-08-30 as jumpiness in the flavour knobs.
+     *
+     * test17 could not catch it. It asserts the knob does not SNAP and has
+     * arrived by 200ms, and a completing 40ms ramp satisfies both.
+     *
+     * The distinguishing property is what happens BETWEEN those two points:
+     * a ramp that completes at 40ms is at full value by 50ms and unchanged
+     * at 400ms, while a one-pole is only part way at 50ms and still
+     * climbing. So compare the two. ---- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        record_full_buffer_loop_a_constant(api, inst, 8000);
+        api->set_param(inst, "master_record", "STOP!");
+        api->set_param(inst, "loopA_volume", "1");
+        api->set_param(inst, "loopA_decay_rate", "600");
+        run_silence(api, inst, BLOCK_FRAMES * 8);
+
+        /* One write, then look at two points on the way to it. */
+        api->set_param(inst, "loopA_dust", "0.9");
+        run_silence(api, inst, (long)(SAMPLE_RATE * 0.05));      /* 50ms */
+        double early = measure_noise(api, inst, 3);
+        run_silence(api, inst, (long)(SAMPLE_RATE * 0.40));      /* ~450ms */
+        double late  = measure_noise(api, inst, 6);
+
+        check(late > 0.0, "test41: the knob reaches the audio at all");
+        check(late > early * 1.3,
+              "test41: 50ms after the write the value is still CLIMBING — a "
+              "ramp that completes in 40ms would read the same at 50ms and "
+              "450ms, and would sit frozen between sparse knob writes");
+        api->destroy_instance(inst);
+    }
+
     /* The PASS line used to print unconditionally and the runner grepped
      * for it, so a suite with real failures still read as green — the same
      * class of blind pass signal as the earlier `grep -c "^FAIL"` that
