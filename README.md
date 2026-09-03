@@ -14,7 +14,8 @@ control on all seven pages, walked through on interactive reconstructions
 of the Move's own display.
 
 See [DESIGN.md](DESIGN.md) for the full interaction model, DSP architecture,
-and design history.
+and design history, and [HANDOFF.md](HANDOFF.md) if you are picking the project
+up — how to build and ship it, and the traps that cost real time to find.
 
 ## Installing
 
