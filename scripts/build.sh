@@ -30,6 +30,10 @@ mkdir -p dist/forgetful
     -lm
 
 cp src/module.json dist/forgetful/module.json
+# On-device help, shown under Help -> Modules in the shadow UI. The host
+# discovers it by scanning modules/<category>/<id>/ at runtime — no
+# module.json entry — so it only has to land in the tarball.
+cp src/help.json dist/forgetful/help.json
 
 cd dist
 tar -czvf forgetful-module.tar.gz forgetful/

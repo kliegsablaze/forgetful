@@ -95,10 +95,12 @@ ssh "$HOST" "mkdir -p '$REMOTE_DIR'"
 # directory, or the rename becomes a copy and the guarantee is lost.
 scp -q dist/forgetful/forgetful.so "$HOST:$REMOTE_DIR/.forgetful.so.incoming"
 scp -q "$DEPLOY_JSON"              "$HOST:$REMOTE_DIR/.module.json.incoming"
+scp -q src/help.json               "$HOST:$REMOTE_DIR/.help.json.incoming"
 ssh "$HOST" "cd '$REMOTE_DIR' && \
     chmod 755 .forgetful.so.incoming && \
     mv -f .forgetful.so.incoming forgetful.so && \
-    mv -f .module.json.incoming module.json"
+    mv -f .module.json.incoming module.json && \
+    mv -f .help.json.incoming help.json"
 
 # ---- reload, then PROVE the running process picked it up ----------------
 #

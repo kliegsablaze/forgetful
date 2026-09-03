@@ -1,0 +1,195 @@
+{
+  "title": "Forgetful",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "Four tape memories",
+        "on one live input.",
+        "",
+        "Send the input to A,",
+        "B, C or D. Each one",
+        "then forgets itself:",
+        "drifting out of tune",
+        "hissing, breaking up",
+        "until it is gone.",
+        "",
+        "Mix the four and you",
+        "play against your",
+        "own recent past."
+      ]
+    },
+    {
+      "title": "Quick Start",
+      "lines": [
+        "1. Send picks a loop",
+        "2. Press REC, play",
+        "3. Press REC again",
+        "   it loops and ages",
+        "4. Press REC again",
+        "   to overdub",
+        "",
+        "Age sets how long it",
+        "lives: 3s to 5min.",
+        "",
+        "Freeze holds a loop",
+        "exactly as it is."
+      ]
+    },
+    {
+      "title": "Pages",
+      "children": [
+        {
+          "title": "Main",
+          "lines": [
+            "Send  which loop is",
+            "      listening",
+            "ECHO  all four, one",
+            "      char each",
+            "REC   rec/stop/dub",
+            "Frz   hold this loop",
+            "",
+            "A-D   playback speed",
+            "",
+            "Speeds: 1x, 1/2x,",
+            "1/4x, 2x and all",
+            "four backwards.",
+            "",
+            "A change of speed",
+            "glides over 5s. A",
+            "change of DIRECTION",
+            "glides through zero:",
+            "it slows, stops, and",
+            "runs the other way."
+          ]
+        },
+        {
+          "title": "Sound",
+          "lines": [
+            "Top row: level for",
+            "each memory, up to",
+            "200%.",
+            "",
+            "Bottom row: Tone.",
+            "Centre is bypass,",
+            "left cuts treble,",
+            "right cuts bass.",
+            "",
+            "Tone is reversible.",
+            "Turn it back and",
+            "what it hid returns."
+          ]
+        },
+        {
+          "title": "Loop A-D",
+          "lines": [
+            "Age   time to gone",
+            "START loop start",
+            "END   loop end",
+            "ECHO  this loop only",
+            "",
+            "FRQ   fine tuning,",
+            "      +/- 12 semis",
+            "Warp  wow + flutter",
+            "Space reverb send",
+            "DUST  surface noise",
+            "",
+            "START and END give",
+            "you any window of",
+            "the take. Nothing is",
+            "erased: move them",
+            "back and it returns.",
+            "",
+            "DUST left is VINYL",
+            "crackle, right is",
+            "hiss. Past halfway",
+            "each brings in the",
+            "other behind it."
+          ]
+        },
+        {
+          "title": "Glitch",
+          "lines": [
+            "End of the chain.",
+            "Stutters everything",
+            "on a grid.",
+            "",
+            "Mix    dry to wet",
+            "Step   the grid",
+            "Odds   chance a step",
+            "       is glitched",
+            "Size   slice length",
+            "",
+            "Kind   which effect",
+            "Reach  how far back",
+            "Pitch  slice pitch",
+            "Width  stereo spread",
+            "",
+            "Mix AND Odds must",
+            "both be up before",
+            "anything happens.",
+            "",
+            "Kinds: Tumble picks",
+            "one per step from",
+            "Stutter, Rewind,",
+            "Tape, Gate, Crush.",
+            "",
+            "Reach is the one to",
+            "try first: it grabs",
+            "from the last two",
+            "seconds, so it",
+            "quotes the memory",
+            "instead of just",
+            "repeating it."
+          ]
+        }
+      ]
+    },
+    {
+      "title": "How It Wears",
+      "lines": [
+        "Warp and DUST are",
+        "written back to the",
+        "tape every pass, so",
+        "they compound. The",
+        "knob sets a RATE,",
+        "not a sound.",
+        "",
+        "Turn one a little,",
+        "little happens now.",
+        "Leave it: the loop",
+        "keeps going further",
+        "on its own.",
+        "",
+        "It cannot be undone.",
+        "Only a new recording",
+        "restores a memory.",
+        "",
+        "Freeze stops all of",
+        "it. Nothing is",
+        "written when frozen."
+      ]
+    },
+    {
+      "title": "Notes",
+      "lines": [
+        "Forgetful never",
+        "saves its settings.",
+        "It starts from",
+        "defaults every time,",
+        "in every set.",
+        "",
+        "A take is a",
+        "performance, not a",
+        "starting point.",
+        "",
+        "So User Presets and",
+        "chain patches cannot",
+        "capture it either.",
+        "",
+        "When a memory dies,",
+        "its knobs reset."
+      ]
+    }
+  ]
+}
