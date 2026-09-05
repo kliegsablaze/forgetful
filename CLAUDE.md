@@ -3,6 +3,45 @@
 Four independent tape memories on one live input, each decaying on its own
 clock. A Schwung `audio_fx` module for Ableton Move, written in C.
 
+## Where we are (2026-09-05)
+
+`main` is at **v0.6.1**, pushed, deployed to a device, **not tagged and not
+released** — the catalog still serves 0.5.4. Since 0.5.4: the module draws its
+own widgets and cards, Age extends a memory's life, END below START plays that
+section backwards, and DUST grew three further surfaces.
+
+**Nothing added since 0.5.4 has been judged by ear.** Do that before
+`release.sh`. The constants most likely to want tuning are `BURST_GAIN`,
+`GRAIN_GAIN`, `DIRT_MAX_DRIVE` and `MEMORY_LIFT_SECONDS`.
+
+**Next up, asked for and not built:** minimalist REC and FREEZE widgets. REC as
+a record button with the current character in its centre; FREEZE as a 3D block
+of ice that sheds pixels — melts — while the loop is aging. Both are
+`master_record` / `master_freeze`, whose `get_param` already answers with the
+next action (`REC`/`STOP`/`DUB`/`PLAY`) and the current state
+(`AGING`/`FROZEN`), so a widget has what it needs from `values`. Animation is
+available: `page_controller.mjs` passes `anim` and `nowMs` into the movy
+render, and `drawSend` in `canvas.js` is the worked example of using it.
+
+**Two things a module cannot fix**, both raised and both needing a Schwung
+change, so don't spend time on them:
+- The parameter card's border is 2px, hardcoded in the host's
+  `param_card.mjs`. `card_w`/`card_h` are the only knobs a module has.
+- The enum overlay on a knob turn is the host's *peek*, armed in
+  `page_controller.mjs` for any divable enum with 2+ options in a single cell.
+  Removing a module's own card does not remove it.
+
+**A Schwung bug worth knowing:** the widget registry latches on the first
+module whose `chain_params` it sees, and `tickComponentWidgets` returns early
+for every later one. Scrolling the module picker past another module arms it,
+and only leaving the component editor — or restarting Schwung — clears it. If
+widgets do not appear, check `debug.log` before suspecting your code.
+
+**`move.local` drops off mDNS regularly.** Deploys hang on SSH rather than
+failing. If `install.sh` stalls after "Building", check `ping move.local`.
+
+---
+
 **Read `HANDOFF.md` before changing anything.** It carries the traps that cost
 real time to find, and most of them look like something else. `DESIGN.md` is
 the interaction model and the DSP rationale. This file is only the short list
@@ -101,3 +140,5 @@ a message that says nothing about the real problem. Grow all four together.
   the prose in `DESIGN.md` / `README.md`.
 - Deploy to the device for judgement by eye; the sound and the look have only
   ever been judged there.
+- Bump `src/module.json` on every deploy, and say plainly what has and has not
+  been seen on hardware.
