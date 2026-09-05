@@ -196,9 +196,12 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
 
   <div class="flist">
     <div class="frow"><div><div class="fn">Send</div></div>
-      <div class="fd">Points the live input at A, B, C or D. Only that one can hear you; the other three keep playing, aging or sitting empty exactly as they were.</div></div>
+      <div class="fd">Points the live input at A, B, C or D. Only that one can hear you; the other three keep playing, aging or sitting empty exactly as they were.
+      <br>The letter sits in a ring with a dot running the inside of it, at that memory's own speed and in its own direction — so the four speed knobs underneath are visible in the cell above them. The ring is the lap: one pass wipes it away behind the dot, the next lays it back down. An empty memory's ring is whole and still, with no dot; a frozen one's dot stops where it is.</div></div>
     <div class="frow"><div><div class="fn">ECHO</div></div>
-      <div class="fd">All four memories at once, one character each in A B C D order, on a single line. A dash for empty, <b>R</b> recording, <b>O</b> overdubbing, <b>F</b> frozen, or a digit for how much is left. <code>9F-1</code> reads as A near full, B frozen, C empty, D nearly gone.<br>The digit counts <b>9 down to 1</b>, then a dash. It never shows 0 — <code>0</code> and <code>O</code> are the same shape on this screen, and a memory one tick from death should not look like one being overdubbed.</div></div>
+      <div class="fd">All four memories at once, a tank each in A B C D order. Each one <b>fills</b> with how much of that memory is left, and carries <b>its own character</b> inside — a digit, or <b>R</b> recording, <b>O</b> overdubbing, <b>F</b> frozen, a dash for empty. The character is drawn as a negative: lit while the tank below it is dark, dark once the fill has risen past it, so it stays readable at every level and the boundary crossing it is itself part of the reading.
+      <br>Two things at once, on two channels that don't fight: the fill is <i>how much is left</i>, the letter is <i>what it is doing</i>. That is why a recording loop and a nearly-gone one can be told apart at a glance rather than by squinting at a code. <b>R</b>, <b>O</b> and <b>F</b> leave the tank empty on purpose — the code carries no level for those three, and filling it would be inventing a number.
+      <br>Underneath it is still a four-character code — <code>9F-1</code> is A near full, B frozen, C empty, D nearly gone — and that is what a Schwung older than 1.2 shows, since drawing this picture is something only 1.2 lets a module do. The digit counts <b>9 down to 1</b>, then a dash, and never 0: <code>0</code> and <code>O</code> are the same shape in this font, and a memory one tick from death should not look like one being overdubbed. The bars have no such problem, which is the point of them.</div></div>
     <div class="frow"><div><div class="fn">REC</div></div>
       <div class="fd">One knob, four stages, each press moving to the next. <b>Press</b> to start recording; <b>press again</b> to stop, and it begins playing and wearing out; <b>press while it plays</b> to overdub, layering onto what's there without erasing it or resetting how far it has gone; <b>press again</b> to stop overdubbing. The readout names what the <i>next</i> press does.<br>Since Schwung 1.0 a <b>turn</b> of the knob fires it as well as a click — a whole flick counts as one press.</div></div>
     <div class="frow"><div><div class="fn">Freeze</div></div>
@@ -206,7 +209,8 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
     <div class="frow"><div><div class="fn">Speed</div></div>
       <div class="fd">Four knobs, one per memory, eight speeds each. <b>1x</b> is home. Turning <b>left</b> steps <b>1/2x</b>, <b>1/4x</b>, <b>2x</b>; turning <b>right</b> runs the tape <i>backwards</i> — <b>-1x</b>, <b>-1/2x</b>, <b>-1/4x</b>, <b>-2x</b>.
       <br>Changes glide over <b>five seconds</b> rather than jumping, and a change of direction glides <i>through zero</i>: the tape slows, stops, and picks up backwards, the way a real one would. Going from 1x to -1x is five seconds of the loop grinding to a halt and running back the other way.
-      <br>A slowed memory also comes apart more slowly, because the damage happens per pass, not per second — half speed is also a way to preserve one.</div></div>
+      <br>A slowed memory also comes apart more slowly, because the damage happens per pass, not per second — half speed is also a way to preserve one.
+      <br>Turning one raises a card while you hold it: a ladder of the four rates with the chosen one picked out, and an arrow under it for which way the tape is running. Reverse is a direction, and a minus sign is a poor way to say so.</div></div>
   </div>
 </section>
 
@@ -238,14 +242,19 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
 
   <div class="flist">
     <div class="frow"><div><div class="fn">Age</div></div>
-      <div class="fd">How long, in seconds, this memory takes to go from full to gone — 3 seconds to 5 minutes. Everything else is a rate of damage; this is the clock they run against.</div></div>
+      <div class="fd">How long this memory has left, <b>from now</b> — 3 seconds to 5 minutes. Everything else is a rate of damage; this is the clock they run against.
+      <br><b>Turning it up buys the memory more time.</b> Take a loop that has faded to a quarter, turn Age from 24s to 125s, and it now has the whole 125 seconds ahead of it — coming back up in level and shedding the hiss and erosion that age had brought, while still <i>sounding</i> exactly as ruined as it has become. The damage is on the tape; the clock is not. You can keep doing it, and it always wants to die again. Turning Age <i>down</i> is a rate change and nothing else, exactly as it always was.
+      <br>The lift takes about nine-tenths of a second rather than happening at the detent — memory sets the loop's level, so snapping it would be a click, loudest from the nearly-dead loop you most want back.
+      <br>Hold or turn it and a card floats over the page with the slope drawn out on a fixed five-minute axis, so 20 seconds and 300 seconds are two different shapes rather than two numbers. The line is straight because the fading is: memory drains at one constant rate the whole way down.</div></div>
     <div class="frow"><div><div class="fn">START</div></div>
-      <div class="fd">Where in the recording the loop begins, from the head at 0% to the tail at 100%.</div></div>
+      <div class="fd">Where in the recording the loop begins, from the head at 0% to the tail at 100%. START and END share one picture across both their cells — a <code>&lt;</code> and a <code>&gt;</code>, each where its own knob is — and the loop is whatever lies between them.</div></div>
     <div class="frow"><div><div class="fn">END</div></div>
       <div class="fd">Where it stops. Together these two are the loop editor: set both and you play any window of the take you like, not just a shorter version of it.
-      <br>Nothing is erased — move them back and what you cut returns. The part outside the window also stops wearing out, since it isn't passing the head, so bring it back later and it sounds as it did when you cut it. Pull END below START and you get the shortest loop the take allows, sitting at START.</div></div>
+      <br>Nothing is erased — move them back and what you cut returns. The part outside the window also stops wearing out, since it isn't passing the head, so bring it back later and it sounds as it did when you cut it.
+      <br><b>Pull END past START and that section plays backwards.</b> The window is the distance between the two knobs whichever way round they are; which one is on the left decides the direction of travel. So END's whole travel is useful, not just the half that shortens. The turn is not a jump: the tape slows, stops and runs back over about a third of a second, the way it would if you reversed a real one.</div></div>
     <div class="frow"><div><div class="fn">FREQ</div></div>
-      <div class="fd">Fine tuning for this memory, a full octave either way in semitones. Its own control, separate from Main's Speed — Speed picks the octave, FREQ trims it. Use it to tune one memory against another <i>by ear while they both play</i>: it lands where you put it in about a twentieth of a second, so you can hear the beating disappear as you turn.<br><b>It's a tape speed, not a pitch shifter.</b> Tune a memory down and it also runs longer, so two loops coming into tune will drift apart in time. That's the trade for it sounding like tape rather than smeared.</div></div>
+      <div class="fd">Fine tuning for this memory, a full octave either way in semitones. Its own control, separate from Main's Speed — Speed picks the octave, FREQ trims it. Use it to tune one memory against another <i>by ear while they both play</i>: it lands where you put it in about a twentieth of a second, so you can hear the beating disappear as you turn.<br><b>It's a tape speed, not a pitch shifter.</b> Tune a memory down and it also runs longer, so two loops coming into tune will drift apart in time. That's the trade for it sounding like tape rather than smeared.
+      <br>Turning it raises a card showing where you are against the centre detent, marked off in semitones — the reading you actually want while you are hunting for the beating to stop.</div></div>
     <div class="frow"><div><div class="fn">ECHO</div></div>
       <div class="fd">This memory's own state as a single character — the same codes as Main's ECHO, for this one alone.</div></div>
     <div class="frow"><div><div class="fn">Warp</div></div>
@@ -256,7 +265,12 @@ footer{margin-top:70px;border-top:1px solid var(--line);padding:32px 0 60px;font
       <div class="fd">Both of the medium's surface noises on one knob, because they are the same failure of the same tape and you almost always want them together.
       <br>Turn <b>left</b> for <b>VINYL</b> — the medium losing material. A gate that takes the <b>quiet</b> parts first, so what survives is peaks surfacing out of silence rather than holes punched at random. It bites harder the older the take gets.
       <br>Turn <b>right</b> for <b>Hiss</b> — noise printed onto the tape on every pass, so it accumulates. Present from the moment you turn it and louder as the take dies: the music disappears and the noise floor doesn't.
-      <br>Past halfway each end brings the other in behind it, so a full turn either way is all of one and <i>half</i> of the other — never one alone. Both are written back onto the tape, so what they do is permanent. Freeze stops both.</div></div>
+      <br>Past halfway each end brings the other in behind it, so a full turn either way is all of one and <i>half</i> of the other — never one alone. Both are written back onto the tape, so what they do is permanent. Freeze stops both.
+      <br><b>Turning left keeps going.</b> The crackle rises across the whole travel, and three more surfaces arrive behind it, each fading in over its own stretch of the knob:
+      <br>&nbsp;&nbsp;<b>past 20%</b> — every click gains a soft breath of noise behind it, the stylus in the groove that made the tick. The breath lengthens as you keep turning, from a tick with a little air to a soft <i>shhk</i>.
+      <br>&nbsp;&nbsp;<b>past 40%</b> — the playback starts to distort the way a worn side does: the peaks fold in, with a little second harmonic so it thickens rather than simply squaring off.
+      <br>&nbsp;&nbsp;<b>past 60%</b> — grains of the take itself are thrown back over it. Short pieces, at octaves so they stay in tune, landing on simple fractions of the loop so they line up with whatever is already playing rather than scattering at random. They get longer as you turn.
+      <br>These three are the surface of <i>this</i> playback, not damage to the tape: unlike VINYL and Hiss they are not written back, so turning DUST down takes them away again. That is deliberate — a distortion inside the write-back would square itself on every pass.</div></div>
   </div>
 </section>
 
@@ -502,6 +516,116 @@ function drawBox(ctx,x,y,val){
   lines.forEach((s,i)=>textC(ctx,s,x+w/2-0.5,top+i*6));
 }
 
+/* Schwung 1.2 lets a module draw its own art inside a knob cell. Two of
+   Forgetful's cells now do, and these reproduce them at the same
+   proportions, so the reconstruction keeps matching the screen.
+   (On Schwung below 1.2 neither is drawn and the built-in widgets show
+   instead — for ECHO, the four characters this used to reconstruct.) */
+
+/* ECHO on Main: the four memories, one tank each in A B C D order, fed the
+   same four-character code the module still reports — so what the picture
+   says and what the wire says cannot drift apart.
+
+   The FILL is how much is left; the GLYPH is what the loop is doing. The
+   glyph is drawn as a negative — lit where the tank is dark, dark where it
+   is lit — so it stays readable at every level, and the fill boundary
+   crossing the character is itself part of the reading.
+
+   Drawn at the cell's FULL width, because that is the frame the device hands
+   the widget (32x15), not the inset box the enum renderer uses. */
+const ECHO_GLYPH={
+  "-":["...","...","###","...","..."],
+  "1":[".#.","##.",".#.",".#.","###"], "2":["###","..#","###","#..","###"],
+  "3":["###","..#","###","..#","###"], "4":["#.#","#.#","###","..#","..#"],
+  "5":["###","#..","###","..#","###"], "6":["###","#..","###","#.#","###"],
+  "7":["###","..#","..#","..#","..#"], "8":["###","#.#","###","#.#","###"],
+  "9":["###","#.#","###","..#","###"],
+  "R":["##.","#.#","##.","#.#","#.#"], "O":["###","#.#","#.#","#.#","###"],
+  "F":["###","#..","##.","#..","#.."]
+};
+function drawSlot(ctx,x,y,w,h,c){
+  /* No border: the fill and the glyph are the whole of it. */
+  const ix=x, iy=y, iw=w, ih=h;
+  ctx.clearRect(ix,iy,iw,ih);
+  const lvl=(c>="1"&&c<="9")?Number(c)/9:0;
+  let fh=lvl>0?Math.round(lvl*ih):0;
+  if(lvl>0&&fh<1) fh=1;
+  const fillTop=iy+ih-fh;
+  if(fh>0) ctx.fillRect(ix,fillTop,iw,fh);
+  const g=ECHO_GLYPH[c];
+  if(!g||iw<3||ih<5) return;
+  const gx=ix+Math.floor((iw-3)/2), gy=iy+Math.floor((ih-5)/2);
+  for(let r=0;r<5;r++) for(let k=0;k<3;k++){
+    if(g[r].charAt(k)!=="#") continue;
+    const py=gy+r;
+    if(fh>0&&py>=fillTop) ctx.clearRect(gx+k,py,1,1); else px(ctx,gx+k,py);
+  }
+}
+function drawMemories(ctx,x,y,w,h,code){
+  const gap=1, colw=Math.floor((w-gap*3)/4);
+  const str=String(code||""), known=str.length>=4;
+  for(let i=0;i<4;i++){
+    const cx=x+i*(colw+gap);
+    if(cx+colw>x+w) break;
+    drawSlot(ctx,cx,y,colw,h,known?str.charAt(i):"");
+  }
+}
+
+/* START and END on a loop page: one graphic across both cells, because a
+   window is the only thing the two of them mean. Two rails are the whole
+   take; the bright part is what plays. */
+const ARROW={ "<":["..#",".#.","#..",".#.","..#"], ">":["#..",".#.","..#",".#.","#.."] };
+function stampGlyph(ctx,g,x,y){
+  for(let r=0;r<5;r++) for(let k=0;k<3;k++) if(g[r].charAt(k)==="#") px(ctx,x+k,y+r);
+}
+/* START and END are two marks and nothing else: a `<` where the loop begins
+   and a `>` where it ends. `>` left of `<` is a real setting — it plays the
+   section backwards — so it is drawn where the knob actually is. */
+function drawWindow(ctx,x,y,w,a,b){
+  const gy=y+5, span=w-3;
+  stampGlyph(ctx,ARROW["<"],x+Math.round(Math.max(0,Math.min(1,a))*span),gy);
+  stampGlyph(ctx,ARROW[">"],x+Math.round(Math.max(0,Math.min(1,b))*span),gy);
+}
+
+/* Speed: the rate centred, direction as a triangle on the edge it travels
+   toward. The minus sign is a poor way to say "backwards". */
+function drawSpeedCell(ctx,x,y,w,h,label){
+  const rev=String(label).charAt(0)==="-";
+  textC(ctx,rev?String(label).slice(1):String(label),x+w/2-0.5,y+5);
+  const cy=y+Math.floor(h/2);
+  for(let i=0;i<3;i++){
+    const runw=3-i;
+    if(rev){ run(ctx,x,x+runw-1,cy-i); if(i) run(ctx,x,x+runw-1,cy+i); }
+    else   { run(ctx,x+w-runw,x+w-1,cy-i); if(i) run(ctx,x+w-runw,x+w-1,cy+i); }
+  }
+}
+
+/* Send: the chosen loop's letter in a ring, with a dot running the inside at
+   that loop's own speed. The ring is the lap counter — one lap wipes it away
+   behind the dot, the next lays it back down. An empty loop's ring is whole
+   and still. */
+function drawSendCell(ctx,x,y,w,h,sel,state,phase){
+  const cx=x+Math.floor(w/2), cy=y+Math.floor(h/2);
+  const r=Math.min(Math.floor(w/2),Math.floor(h/2),7);
+  const empty=(state==="-"||!state);
+  const deg=(phase||0)*360;
+  for(let a=0;a<360;a++){
+    if(!empty){ if(a<deg) continue; }
+    const rad=a*Math.PI/180;
+    px(ctx,cx+Math.round(Math.sin(rad)*r),cy-Math.round(Math.cos(rad)*r));
+  }
+  if(!empty){
+    const rad=deg*Math.PI/180;
+    px(ctx,cx+Math.round(Math.sin(rad)*(r-1)),cy-Math.round(Math.cos(rad)*(r-1)));
+  }
+  const g=ECHO_LETTER[sel];
+  if(g) stampGlyph(ctx,g,cx-1,cy-2);
+}
+const ECHO_LETTER={
+  "A":["###","#.#","###","#.#","#.#"], "B":["##.","#.#","##.","#.#","##."],
+  "C":["###","#..","#..","#..","###"], "D":["##.","#.#","#.#","#.#","##."]
+};
+
 function drawDevice(ctx, s){
   ctx.clearRect(0,0,SCR_W,SCR_H);
   ctx.fillStyle="#fff";
@@ -529,9 +653,18 @@ function drawDevice(ctx, s){
 
   s.cells.forEach((cell,i)=>{
     const x=(i%4)*COL_W, y=ROW_Y[i<4?0:1], sel=i===s.touchedIndex;
-    if(cell.kind==="dial")         drawDial(ctx,x+15,y+10,cell.value.f);
-    else if(cell.kind==="trigger") drawTrigger(ctx,x+16,y,sel);
-    else                           drawBox(ctx,x+6,y+2,cell.value);
+    if(cell.kind==="dial")          drawDial(ctx,x+15,y+10,cell.value.f);
+    else if(cell.kind==="trigger")  drawTrigger(ctx,x+16,y,sel);
+    else if(cell.kind==="memories") drawMemories(ctx,x,y+2,COL_W,15,cell.value);
+    else if(cell.kind==="tank")     drawSlot(ctx,x+12,y+2,7,15,cell.value);
+    else if(cell.kind==="speed")    drawSpeedCell(ctx,x,y+2,COL_W,15,cell.value);
+    else if(cell.kind==="send")     drawSendCell(ctx,x,y+2,COL_W,15,cell.value.sel,cell.value.st,cell.value.ph);
+    else if(cell.kind==="word")     textC(ctx,cell.value,x+15.5,y+7);
+    else if(cell.kind==="window")   drawWindow(ctx,x+6,y+2,COL_W*2-12,
+                                      cell.value.f,
+                                      s.cells[i+1]?s.cells[i+1].value.f:0);
+    else if(cell.kind==="windowEnd"){ /* drawn by START, its anchor cell */ }
+    else                            drawBox(ctx,x+6,y+2,cell.value);
 
     if(sel){                       /* the touched knob wears four marks */
       px(ctx,x+8,y+1); px(ctx,x+24,y+1);
@@ -583,6 +716,11 @@ function threshold(ctx){
 /* Builds one interactive device screen inside `mount`.
    cell.kind: "dial" (values are {t,f} — display text + 0..1 fraction),
    "box" / "box2" (enum — values are a string, or a pair joined into one),
+   "memories" (Main's ECHO — the value is the four-character code),
+   "window" / "windowEnd" (START and END — one graphic over both cells,
+   drawn by the "window" anchor, which reads its partner's value out of
+   the cells array; both keep their own label and their own hit target,
+   exactly as they do on the device),
    "trigger" (values are the header text it cycles through; the resting
    cell never shows them, only a fixed glyph — exactly like the real
    device never shows a trigger's live value except in the touched header). */
@@ -599,7 +737,8 @@ function buildDevice(mount, page){
   const itEl=document.getElementById(page.id+"-it"), idEl=document.getElementById(page.id+"-id");
 
   function headerValue(cell,v){
-    if(cell.kind==="dial") return v.t;
+    if(cell.kind==="dial"||cell.kind==="window"||cell.kind==="windowEnd") return v.t;
+    if(cell.kind==="send") return v.sel;
     if(cell.kind==="box2") return v.join("");
     return v; /* box or trigger */
   }
@@ -642,21 +781,23 @@ buildDevice(document.getElementById("mainDevice"),{
   id:"main", title:"Main", pageIndex:0, pageCount:7,
   hint:"Send, ECHO, REC and Freeze on top; the four playback speeds underneath.",
   cells:[
-    {label:"Send",kind:"box",idx:0,values:["A","B","C","D"],
-      desc:v=>"Send — knob 1. Points the live input at memory "+v+". Only "+v+" can hear it right now."},
-    {label:"ECHO",kind:"box",idx:0,values:["----","7R--","9F-1","FRO1"],
-      desc:v=>"ECHO — knob 2, read-only. All four memories in A B C D order: "+v+". Digits run 9 down to 1, then a dash — never 0, which would look like O for overdub."},
+    {label:"Send",kind:"send",idx:0,values:[
+       {sel:"A",st:"7",ph:0.15},{sel:"B",st:"-",ph:0},
+       {sel:"C",st:"4",ph:0.6},{sel:"D",st:"F",ph:0.35}],
+      desc:v=>"Send — knob 1. Points the live input at memory "+v.sel+". Only "+v.sel+" can hear it right now. The dot runs the ring at that memory's own speed and direction; the ring is the lap, wiped away on one pass and laid back down on the next. An empty memory's ring is whole and still."},
+    {label:"ECHO",kind:"memories",idx:0,values:["----","7R--","9F-1","FRO1"],
+      desc:v=>"ECHO — knob 2, read-only. All four memories in A B C D order, a tank each: "+v+". The fill is how much is left; the character inside is what that loop is doing, drawn as a negative so it reads at every level."},
     {label:"REC",kind:"trigger",idx:0,values:["REC","STOP","DUB","PLAY"],
       desc:v=>"REC — knob 3. Names what the next press does. Reads "+v+" now."},
     {label:"Freeze",kind:"trigger",idx:0,values:["AGING","FROZEN"],
       desc:v=>"Freeze — knob 4. "+(v==="FROZEN"?"This memory is held; nothing is being written onto its tape.":"This memory is wearing out normally.")},
-    {label:"A",kind:"box",idx:0,values:["1x","1/2x","-1x","-2x"],
+    {label:"A",kind:"speed",idx:0,values:["1x","1/2x","-1x","-2x"],
       desc:v=>"Speed A — knob 5. Memory A plays at "+v+". Changes glide over five seconds; a direction change glides through zero."},
-    {label:"B",kind:"box",idx:0,values:["1x","1/2x","-1x","-2x"],
+    {label:"B",kind:"speed",idx:0,values:["1x","1/2x","-1x","-2x"],
       desc:v=>"Speed B — knob 6. Memory B plays at "+v+"; slower also means it comes apart slower."},
-    {label:"C",kind:"box",idx:0,values:["1x","1/2x","-1x","-2x"],
+    {label:"C",kind:"speed",idx:0,values:["1x","1/2x","-1x","-2x"],
       desc:v=>"Speed C — knob 7. Memory C plays at "+v+"."},
-    {label:"D",kind:"box",idx:0,values:["1x","1/2x","-1x","-2x"],
+    {label:"D",kind:"speed",idx:0,values:["1x","1/2x","-1x","-2x"],
       desc:v=>"Speed D — knob 8. Memory D plays at "+v+"."},
   ]
 });
@@ -692,11 +833,11 @@ buildDevice(document.getElementById("loopDevice"),{
   cells:[
     {label:"Age",kind:"dial",idx:2,values:[{t:"3s",f:0},{t:"60s",f:.2},{t:"300s",f:1}],
       desc:v=>"Age — knob 1. This memory takes "+v.t+" to go from full to gone."},
-    {label:"START",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"25%",f:.25},{t:"60%",f:.6}],
-      desc:v=>"START — knob 2, at "+v.t+". Where the loop begins in the recording. Nothing is erased; move it back and the front returns."},
-    {label:"END",kind:"dial",idx:0,values:[{t:"100%",f:1},{t:"75%",f:.75},{t:"40%",f:.4}],
-      desc:v=>"END — knob 3, at "+v.t+". Where the loop stops. With START it makes any window of the take, not just a shorter version of it."},
-    {label:"ECHO",kind:"box",idx:0,values:["-","9","F","O"],
+    {label:"START",kind:"window",idx:0,values:[{t:"0%",f:0},{t:"25%",f:.25},{t:"60%",f:.6}],
+      desc:v=>"START — knob 2, at "+v.t+". Where the loop begins in the recording. Nothing is erased; move it back and the front returns. It shares one picture with END: the rails are the whole take, the bright part is what plays."},
+    {label:"END",kind:"windowEnd",idx:0,values:[{t:"100%",f:1},{t:"75%",f:.75},{t:"40%",f:.4}],
+      desc:v=>"END — knob 3, at "+v.t+". Where the loop stops. With START it makes any window of the take, not just a shorter version of it — which is why the two of them draw one graphic across both cells rather than two unrelated percentages."},
+    {label:"ECHO",kind:"tank",idx:0,values:["-","9","F","O"],
       desc:v=>"ECHO — knob 4, read-only. This memory alone: "+(v==="-"?"empty.":(v==="F"?"frozen.":(v==="O"?"overdubbing.":"about 90% left.")))},
     {label:"FRQ",kind:"dial",idx:0,values:[{t:"0.0",f:.5},{t:"-4.5",f:.31},{t:"+7.0",f:.79}],
       desc:v=>"FREQ — knob 5, at "+v.t+" semitones. Fine tuning, an octave either way, for matching this memory to another by ear. A tape speed, so tuning down also runs it longer. (The screen shortens it to FRQ.)"},
@@ -723,7 +864,7 @@ buildDevice(document.getElementById("glitchDevice"),{
       desc:v=>"Odds — knob 3, at "+v.t+". "+(v.f===0?"Zero: no step is ever taken over, so nothing happens even at full Mix.":"How likely each step is to be glitched.")},
     {label:"Size",kind:"dial",idx:0,values:[{t:"50%",f:.5},{t:"10%",f:.1},{t:"100%",f:1}],
       desc:v=>"Size — knob 4, at "+v.t+". How much of the step the slice covers. Small is frantic, large is chunky."},
-    {label:"Kind",kind:"box",idx:0,values:["Tumble","Stutter","Rewind","Tape","Gate","Crush"],
+    {label:"Kind",kind:"word",idx:0,values:["Tumble","Stutter","Rewind","Tape","Gate","Crush"],
       desc:v=>v==="Tumble"?"Kind — knob 5. Tumble re-rolls which of the five effects on every step.":"Kind — knob 5, pinned to "+v+"."},
     {label:"Reach",kind:"dial",idx:0,values:[{t:"0%",f:0},{t:"60%",f:.6},{t:"100%",f:1}],
       desc:v=>"Reach — knob 6, at "+v.t+". "+(v.f===0?"Zero: slices come from the audio that just went past — the classic stutter.":"Slices are grabbed from further back, up to two seconds, so it quotes rather than repeats.")},

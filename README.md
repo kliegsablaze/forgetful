@@ -24,7 +24,14 @@ and updates it for you**. Open `http://move.local:7700`, find Forgetful in
 the Module Store and install it; new releases show up there within a few
 minutes of being tagged.
 
-Needs **Schwung 0.12.1 or newer**.
+Needs **Schwung 0.12.1 or newer**. On **Schwung 1.2 or newer** Forgetful also
+draws its own screen where a number was the wrong shape: Main's ECHO becomes
+four tanks, each filling with what is left of that memory and lettered with
+what it is doing; Send becomes the chosen loop's letter in a ring with a dot
+running it at that loop's own speed; START and END become the two marks they
+are; and Age and FREQ raise a picture of what they mean while you turn them.
+On anything older those cells fall back to Schwung's built-in widgets and
+nothing else changes.
 
 ### Installing by hand
 

@@ -93,14 +93,26 @@ ssh "$HOST" "mkdir -p '$REMOTE_DIR'"
 # instance keeps its old mapping intact and simply carries on with the old
 # code until the module is next loaded. Temp file goes in the SAME
 # directory, or the rename becomes a copy and the guarantee is lost.
+#
+# canvas.js and cards.js are the module's own drawing code, read by the
+# shadow UI process rather than by the shim: canvas.js on component load
+# (it registers the custom widget), cards.js on the first touch of a knob
+# that declares a card. Neither is mapped, so neither can take the audio
+# process down the way the .so can — but they go through the same staging
+# rename anyway, because the point of the pattern is that nobody has to
+# remember which files are the dangerous ones.
 scp -q dist/forgetful/forgetful.so "$HOST:$REMOTE_DIR/.forgetful.so.incoming"
 scp -q "$DEPLOY_JSON"              "$HOST:$REMOTE_DIR/.module.json.incoming"
 scp -q src/help.json               "$HOST:$REMOTE_DIR/.help.json.incoming"
+scp -q src/canvas.js               "$HOST:$REMOTE_DIR/.canvas.js.incoming"
+scp -q src/cards.js                "$HOST:$REMOTE_DIR/.cards.js.incoming"
 ssh "$HOST" "cd '$REMOTE_DIR' && \
     chmod 755 .forgetful.so.incoming && \
     mv -f .forgetful.so.incoming forgetful.so && \
     mv -f .module.json.incoming module.json && \
-    mv -f .help.json.incoming help.json"
+    mv -f .help.json.incoming help.json && \
+    mv -f .canvas.js.incoming canvas.js && \
+    mv -f .cards.js.incoming cards.js"
 
 # ---- reload, then PROVE the running process picked it up ----------------
 #

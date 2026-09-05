@@ -50,7 +50,7 @@ the shared page planner whatever label is declared (fleet-wide convention).
 | Knob | Key | Label | Behavior |
 | --- | --- | --- | --- |
 | 1 | `input_routing` | **Send** | `enum` `A`/`B`/`C`/`D`, default `A`. Which loop the live input feeds. |
-| 2 | `master_loops_overview` | **ECHO** | Read-only (`access: "read"`). One character per loop in A/B/C/D order on a single line: `-` idle/forgotten, `R` recording, `O` overdubbing, `F` frozen, else a digit. The digit counts **9 down to 1 and never 0** — `0` and `O` are the same glyph in this font, so a loop one tick from death would look like one being overdubbed. |
+| 2 | `master_loops_overview` | **ECHO** | Read-only (`access: "read"`). One character per loop in A/B/C/D order on a single line: `-` idle/forgotten, `R` recording, `O` overdubbing, `F` frozen, else a digit. The digit counts **9 down to 1 and never 0** — `0` and `O` are the same glyph in this font, so a loop one tick from death would look like one being overdubbed. Since 0.5.5 this cell is **drawn** as four bars rather than printed (see Screen / Feedback); the string is unchanged and is what the drawer reads and what an older host shows. |
 | 3 | `master_record` | **REC** | Trigger (`access: "write"`). See "Recording, catching, overdubbing". |
 | 4 | `master_freeze` | **Freeze** | Trigger (`access: "write"`). Toggles `frozen` on the routed loop. |
 | 5-8 | `loopX_speed` | **A**-**D** | `enum`, eight options in knob order: `2x 1/4x 1/2x [1x] -1x -1/2x -1/4x -2x`. The four negatives play backwards. See "Speed and FREQ". |
@@ -69,7 +69,7 @@ the shared page planner whatever label is declared (fleet-wide convention).
 | 1 | `loopX_decay_rate` | **Age** | 3-300 seconds, default 300. How long the loop takes to fade to silence. The clock every rate knob runs against. |
 | 2 | `loopX_start` | **START** | 0-1, default 0. Where the loop begins in the take. |
 | 3 | `loopX_end` | **END** | 0-1, default 1. Where it ends. Together these give any WINDOW of the take, which one bipolar Trim could not. |
-| 4 | `loopX_state` | **ECHO** | Read-only, the same single character as Main's overview, for this loop alone. |
+| 4 | `loopX_state` | **ECHO** | Read-only, the same single character as Main's overview, for this loop alone — and since 0.5.6 drawn as the same tank, at the same size, so the two readings do not have to be learned twice. |
 | 5 | `loopX_freq` | **FREQ** | -12..+12 semitones, default 0. Fine varispeed. Renders as `FRQ` — the host's fleet-wide `WORD_ABBREV`. |
 | 6 | `loopX_wow` | **Warp** | 0-1, default 0. Wow/flutter/drift on the read head. |
 | 7 | `loopX_send` | **Space** | 0-1, default 0. Post-fader send into the shared FDN reverb. |
@@ -246,6 +246,51 @@ position - a loop that isn't routed keeps aging exactly as if it were.
 
 ## Screen / Feedback
 
+### What the module draws itself
+
+Schwung 1.2 lets a module draw inside a knob cell and raise a card over the
+page while a knob is turned. Forgetful uses both, for the readings that a
+number was the wrong shape for:
+
+- **Main's ECHO** is four tanks, one per loop. The **fill** is how much
+  memory is left; the **character inside it** — `R`, `O`, `F`, a dash, or the
+  decile digit — is what that loop is doing, drawn as a negative so it is lit
+  against the dark part of the tank and dark against the filled part. Two
+  readings on two channels, which is what lets one cell say "recording" and
+  "nearly gone" at once. This is the "status overview" the original design
+  wanted and could not fit: a cell holds six to eight characters and the
+  honest string was twenty-three.
+  The 3x5 glyphs are drawn pixel by pixel rather than with `ctx.print`,
+  because a printed glyph is one colour and this one is two at the same time.
+- **START and END** are one graphic across both cells: a `<` and a `>`, each
+  at its own knob's position. They are the only pair here whose values mean
+  nothing apart. `>` left of `<` is a real setting — it plays that section
+  backwards — so it is drawn where the knob is rather than tidied away.
+- **Send** is the chosen loop's letter in a ring, with a dot running the
+  inside at that loop's own speed and direction, so the four speed knobs are
+  visible in the cell above them. The ring is the lap counter: one pass wipes
+  it away behind the dot, the next lays it back down. An empty loop's ring is
+  whole and still.
+- **Speed, the per-loop ECHO and Glitch's Kind** draw themselves too, without
+  the built-in enum's border — the grid already says "this is a cell", so the
+  box was ink spent saying it twice. Speed puts the rate in the middle and the
+  direction on the edge it travels toward.
+- **Age, Speed and FREQ** raise a card while held. Age's is the decay slope
+  on a fixed 300-second axis, and it is a straight line because the decay is
+  linear — memory drains at one constant rate, so a curve would be a
+  prettier picture of something the module does not do.
+
+Three constraints shaped these. A module gets **one** widget kind, so both
+widgets are `custom:fg` and the drawer branches on the viz group. A card sees
+**one parameter** — no neighbours, no reads — which is why Speed and FREQ are
+two cards rather than one tuning picture, quite apart from their being on
+different pages. And a value may read back **null**, meaning the read did not
+answer; every drawer prints `--` and stops, because a bar at zero and a
+genuine zero are the same picture.
+
+None of it costs a knob slot, and none of it is required: on a host older
+than 1.2 the built-in widgets draw and the module is unchanged.
+
 Main's ECHO readout and each loop's own `state` knob share one compact
 per-loop code (see Page 0 table above). Each loop's `loopX_status`
 (unconstrained full text, not shown on a knob cell but readable via
@@ -253,6 +298,54 @@ get_param) still carries `Ready` / `Recording` / `Looping - NN% (word)` /
 `Forgotten` / `Erasing...`; the memory-percentage-to-word mapping is
 unchanged: 90-100% "Vivid", 40-89% "Fading", 10-39% "Hazy", 1-9% "Almost
 gone".
+
+## Age is time remaining, not a rate
+
+Turning Age UP restarts the clock: the memory lifts back to full over
+`MEMORY_LIFT_SECONDS` (0.9s) and has the whole new duration ahead of it.
+Turning it DOWN changes the rate and nothing else.
+
+The tape damage is untouched either way — it lives in the buffer, written
+pass by pass, and is not stored in `memory` at all. So a revived loop comes
+back up in level and sheds its age-scaled hiss and gate erosion while still
+sounding as ruined as it has become. That asymmetry is the feature: you can
+keep buying a worn take more time, and it keeps wearing.
+
+It is a glide rather than a write because `memory` scales the loop's output
+level; assigning it would be a step in the output, loudest from exactly the
+nearly-dead loop worth reviving.
+
+## The window has a direction
+
+The loop is `|END - START|` whichever way round the two knobs are, and which
+one is on the left decides the direction of travel. END below START used to
+collapse to a minimum-length loop at START, which made half of END's travel do
+nothing but shorten.
+
+The flip glides through zero over `WINDOW_FLIP_SECONDS` (0.35s), so the tape
+slows, stops and runs back. It has its own direction state rather than reusing
+the speed knob's: `get_param("speed")` identifies the selected option by the
+sign of `speed_dir_target`, and the host learns an enum's wire format from
+exactly that read, so folding the window's direction in would have made the
+module report a reverse speed nobody selected.
+
+## DUST's further reaches
+
+Turning DUST left keeps raising the crackle across the whole travel, and
+brings in three more surfaces behind it: a noise burst behind every click from
+0.20 (tail 4→110ms), worn-side soft clipping with a second-harmonic bias from
+0.40, and grains of the take thrown back over it from 0.60 — six voices, at
+octaves so they stay in tune, landing on simple fractions of the loop window
+so they line up with what is already playing.
+
+**All three sit after the write-back**, beside the crackle and for the same
+reason: they are the surface of *this* playback, not damage to the medium. A
+distortion inside the recursion squares itself on every pass.
+
+They are driven by DUST's own slewed left-travel, **not** by `applied_crackle`
+— that variable is `loopX_chaos`, VINYL's own parameter and an LFO and CC
+target, so keying them off it silently changed what VINYL means for anyone
+already using it.
 
 ## DSP Architecture
 

@@ -526,7 +526,15 @@ int main(void) {
         void *inst = api->create_instance(".", NULL);
         check(inst != NULL, "test0: create_instance");
 
-        char cp[8192], hier[4096], probe[64];
+        /* cp TRACKS forgetful.c's own json[12288]. It was 8192, which made
+         * the FIXTURE the binding limit rather than the module: at 8071
+         * bytes the 1.2 widget and card declarations came within 121 bytes
+         * of failing here for a reason that says nothing about the module.
+         * get_param returns -1 rather than truncating, so an undersized
+         * buffer here fails as "chain_params readable" — the least
+         * informative message this file can produce. The headroom check
+         * below is what is supposed to catch a contract outgrowing itself. */
+        char cp[12288], hier[4096], probe[64];
 
         int n = api->get_param(inst, "chain_params", cp, sizeof(cp));
         check(n > 0, "test0: chain_params readable");
@@ -548,6 +556,48 @@ int main(void) {
               "test0: chain_params fits its buffer with real headroom — it is\n"
               "built into a fixed 12288 stack buffer and snprintf truncates\n"
               "SILENTLY, so this must fail while there is still room to fix it");
+
+        /* The Schwung 1.2 draw surfaces. These are DECLARATIONS ONLY — the
+         * drawing lives in src/canvas.js and src/cards.js, which this bench
+         * cannot execute. What it can pin is that the declarations exist and
+         * are spelled the way the host looks them up, because every way of
+         * getting them wrong produces the SAME picture on the device: a
+         * correct page drawn with the built-in widgets. A typo, a failed
+         * load, an old host and a one-strike disable are indistinguishable
+         * by eye, so an assertion here is worth more than a look at it. */
+        check(strstr(cp, "\"viz\":{\"kind\":\"custom:fg\"}") != NULL,
+              "test0: master_loops_overview declares the custom widget kind");
+        check(strstr(cp, "\"viz\":{\"kind\":\"custom:fg\",\"group\":\"w\",\"role\":\"a\"}") != NULL &&
+              strstr(cp, "\"viz\":{\"group\":\"w\",\"role\":\"b\"}") != NULL,
+              "test0: START and END form one two-cell viz group. The kind may\n"
+              "sit on either member, but BOTH roles must be declared: a group\n"
+              "with one spanning role is dropped as \"no spanning roles\"");
+        {
+            /* One card per loop on each of the two knobs that carry one.
+             *
+             * SPEED HAS NO CARD, deliberately. Its cell draws the rate and a
+             * direction arrow, which is the whole of what the card said, so a
+             * panel over the page repeated it. (The enum PEEK that still
+             * appears on a turn is the host's, not ours — see HANDOFF.) */
+            int age = 0, speed = 0, freq = 0, kinds = 0;
+            const char *q;
+            for (q = cp; (q = strstr(q, "cards.js#fg_age")) != NULL; q++) age++;
+            for (q = cp; (q = strstr(q, "cards.js#fg_speed")) != NULL; q++) speed++;
+            for (q = cp; (q = strstr(q, "cards.js#fg_freq")) != NULL; q++) freq++;
+            check(age == 4 && freq == 4 && speed == 0,
+                  "test0: Age and FREQ declare a card on all four loops; Speed\n"
+                  "declares none — its own cell already says rate and direction");
+
+            /* Every cell the module draws itself. Nine: the Master overview,
+             * four loop windows (the kind sits on START), four per-loop ECHOs,
+             * four speeds and Glitch's Kind. Counted rather than merely found,
+             * because a viz lost from ONE loop is invisible by eye — the other
+             * three still draw and the page looks right. */
+            for (q = cp; (q = strstr(q, "custom:fg")) != NULL; q++) kinds++;
+            check(kinds == 15,
+                  "test0: fifteen cells declare the custom kind (Send + overview +\n"
+                  "4 windows + 4 loop ECHOs + 4 speeds + glitch Kind)");
+        }
 
         n = api->get_param(inst, "ui_hierarchy", hier, sizeof(hier));
         check(n > 0, "test0: ui_hierarchy readable");
@@ -619,8 +669,13 @@ int main(void) {
                          "\"min\":3,\"max\":300") != NULL,
               "test0: loopX_decay_rate range is 3..300");
 
-        /* No OFF option — Route is exactly the four letters now. */
-        check(strstr(cp, "\"options\":[\"A\",\"B\",\"C\",\"D\"],\"default\":0}") != NULL,
+        /* No OFF option — Route is exactly the four letters now.
+         *
+         * Deliberately NOT anchored on the entry's closing brace: it was, and
+         * adding an unrelated `viz` to the same parameter broke an assertion
+         * that has nothing to do with viz. A check should fail for the reason
+         * it is named after. */
+        check(strstr(cp, "\"options\":[\"A\",\"B\",\"C\",\"D\"],\"default\":0") != NULL,
               "test0: input_routing options are exactly A/B/C/D, no OFF");
         check(strstr(cp, "OFF") == NULL, "test0: chain_params has no OFF option anywhere");
 
@@ -2379,11 +2434,14 @@ int main(void) {
      * rewritten silently. ---- */
     {
         void *inst = api->create_instance(".", NULL);
-        /* 8192, not 4096: chain_params is ~6KB and the module REFUSES a
-         * short buffer rather than truncating, so an undersized one here
-         * returns -1 and leaves the buffer uninitialised — which reads as
-         * a contract failure that is really a test bug. */
-        char b[8192];
+        /* 12288, matching forgetful.c's own json[] — the THIRD buffer in this
+         * file that has to track it (test0's cp and test33's js are the other
+         * two). The module REFUSES a short buffer rather than truncating, so
+         * an undersized one returns -1 and leaves this uninitialised, and the
+         * option-order check below then fails too — two red lines, neither
+         * about the enum, both a test bug. It was 8192 and the 1.2 viz
+         * declarations took the contract past it. Grow all three together. */
+        char b[12288];
         int cpn = api->get_param(inst, "chain_params", b, sizeof(b));
         check(cpn > 0, "test38: chain_params fits the buffer this test gives it");
         check(strstr(b, "\"options\":[\"2x\",\"1/4x\",\"1/2x\",\"1x\","
@@ -2633,6 +2691,385 @@ int main(void) {
               "ramp that completes in 40ms would read the same at 50ms and "
               "450ms, and would sit frozen between sparse knob writes");
         api->destroy_instance(inst);
+    }
+
+    /* ---- Test 42: Age turned UP extends the life, and does it smoothly.
+     *
+     * The rule: Age is how long this memory has left FROM NOW, so turning it
+     * up restarts the clock — memory lifts back to full while the tape damage
+     * stays where it is. Turned DOWN it is a rate and nothing else.
+     *
+     * The reason this test measures the MIDDLE of the lift and not just its
+     * end: writing memory = 1.0f in the setter passes every end-state
+     * assertion here and is the bug the glide exists to prevent. memory
+     * scales the loop's output level, so an instant reset is a step in the
+     * output — a click, loudest from the nearly-dead loop most likely to be
+     * revived. An end-state-only test cannot tell the two apart. ---- */
+    {
+        void *inst = api->create_instance(".", NULL);
+        check(inst != NULL, "test42: create_instance");
+
+        api->set_param(inst, "loopA_decay_rate", "6");
+        float phase = 0.0f;
+        record_full_buffer_loop_a(api, inst, &phase);
+        check(status_is_looping(status_of(api, inst, 'A')), "test42: Looping after close");
+
+        run_silence(api, inst, TEST_DECAY_FRAMES(3.0));
+        int pct = -1; char word[32];
+        const char *st = status_of(api, inst, 'A');
+        check(sscanf(st, "Looping - %d%% (%31[^)])", &pct, word) == 2,
+              "test42: status parses partway through the decay");
+        int half = pct;
+        check(half >= 35 && half <= 65, "test42: about half the memory is gone");
+
+        /* Turn Age UP, then advance ONE BLOCK. The lift must have barely
+         * started: this is the assertion an instant reset fails. */
+        api->set_param(inst, "loopA_decay_rate", "60");
+        run_silence(api, inst, BLOCK_FRAMES);
+        st = status_of(api, inst, 'A');
+        check(sscanf(st, "Looping - %d%% (%31[^)])", &pct, word) == 2, "test42: status parses");
+        check(pct <= half + 10,
+              "test42: one block after the turn the memory has NOT jumped — the\n"
+              "lift is glided, not written. A setter that assigns memory = 1.0f\n"
+              "passes every other check in this test and fails here");
+
+        /* A tenth of a second in, it is PART WAY: measurably up, nowhere near
+         * full. One block is too short to tell a 0.9s glide from a 0.09s one
+         * — both look like nothing has happened yet — so the near-snap needs
+         * its own window, wide enough for the real glide to have moved and
+         * narrow enough that a fast one has already finished. */
+        run_silence(api, inst, TEST_DECAY_FRAMES(0.1));
+        st = status_of(api, inst, 'A');
+        check(sscanf(st, "Looping - %d%% (%31[^)])", &pct, word) == 2, "test42: status parses");
+        check(pct > half && pct <= 80,
+              "test42: a tenth of a second in, the lift is under way and NOT\n"
+              "finished — a glide short enough to click is already at full here");
+
+        /* And by the far side of MEMORY_LIFT_SECONDS it has arrived. */
+        run_silence(api, inst, TEST_DECAY_FRAMES(1.3));
+        st = status_of(api, inst, 'A');
+        check(sscanf(st, "Looping - %d%% (%31[^)])", &pct, word) == 2, "test42: status parses");
+        check(pct >= 95,
+              "test42: Age turned up restarts the clock — the memory is back to\n"
+              "full, so the loop has the whole new duration to live");
+
+        /* Turned DOWN it must not lift. Decay from ~full at 6s for 3s lands
+         * near half. */
+        api->set_param(inst, "loopA_decay_rate", "6");
+        run_silence(api, inst, TEST_DECAY_FRAMES(3.0));
+        st = status_of(api, inst, 'A');
+        check(sscanf(st, "Looping - %d%% (%31[^)])", &pct, word) == 2, "test42: status parses");
+        check(pct >= 30 && pct <= 70,
+              "test42: turning Age DOWN changes the rate and nothing else — it\n"
+              "keeps decaying from where it was rather than being refilled");
+
+        /*
+         * AND AGAIN, FROM HALF — the check above cannot see a lift armed on a
+         * downward turn, because it runs while memory is still ~full, where a
+         * lift has nothing to climb.
+         *
+         * BOTH VALUES MUST BE INSIDE 3..300. The first version of this step
+         * turned Age down to "2", which the setter clamps to MIN_DECAY_RATE —
+         * so the write changed nothing, no turn was detected, and the
+         * mutation it was written to catch stayed green. A test that sets a
+         * parameter outside its declared range is not testing the thing it
+         * names.
+         */
+        api->set_param(inst, "loopA_decay_rate", "3");
+        run_silence(api, inst, TEST_DECAY_FRAMES(1.0));
+        st = status_of(api, inst, 'A');
+        check(sscanf(st, "Looping - %d%% (%31[^)])", &pct, word) == 2, "test42: status parses");
+        check(pct <= 35,
+              "test42: turning Age DOWN from a HALF-GONE memory does not revive\n"
+              "it — this is the one that fails if the lift is armed on any turn\n"
+              "rather than only an increase");
+
+        api->destroy_instance(inst);
+    }
+
+    /* ---- Test 43: END below START plays that section BACKWARDS.
+     *
+     * It used to collapse to a minimum-length loop sitting at START, so half
+     * of END's travel did nothing but shorten. The window is now |END-START|
+     * whichever way round they are, and which one is on the left decides the
+     * direction of travel.
+     *
+     * A RAMP, not a tone: a tone played backwards is the same tone, and this
+     * test is entirely about direction. ---- */
+    {
+        static const struct { const char *start, *end; double want; } win[] = {
+            { "0.2", "0.8", +1.0 },   /* END right of START: forwards */
+            { "0.8", "0.2", -1.0 },   /* END left  of START: backwards */
+        };
+        for (int k = 0; k < 2; k++) {
+            void *inst = api->create_instance(".", NULL);
+            record_full_buffer_loop_a_ramp(api, inst);
+            api->set_param(inst, "loopA_decay_rate", "300");
+            api->set_param(inst, "loopA_wow", "0");
+            api->set_param(inst, "loopA_start", win[k].start);
+            api->set_param(inst, "loopA_end",   win[k].end);
+            /* Past WINDOW_FLIP_SECONDS, which passes through zero — measuring
+             * inside the glide reads the slowdown, not the direction. */
+            run_silence(api, inst, SAMPLE_RATE);
+            double sl = measure_slope_sign(api, inst, 300);
+            check(sl * win[k].want > 0.7,
+                  "test43: the window plays in the direction its two knobs are\n"
+                  "in — END left of START runs the section backwards");
+            api->destroy_instance(inst);
+        }
+
+        /*
+         * AND IT IS THE SAME LENGTH OF TAPE EITHER WAY.
+         *
+         * Direction alone cannot see the old behaviour clearly enough: a
+         * minimum-length loop still has a direction. The reversed window must
+         * be the SAME SPAN as the forward one — that is what says END below
+         * START is a window at all rather than a collapse. Period is the
+         * measure to use here; a level or RMS reading would be reading the
+         * regulator's gain rather than the loop.
+         */
+        double per[2] = { 0.0, 0.0 };
+        for (int k = 0; k < 2; k++) {
+            void *inst = api->create_instance(".", NULL);
+            record_full_buffer_loop_a_ramp(api, inst);
+            api->set_param(inst, "loopA_decay_rate", "300");
+            api->set_param(inst, "loopA_wow", "0");
+            api->set_param(inst, "loopA_send", "0");
+            api->set_param(inst, "loopA_start", win[k].start);
+            api->set_param(inst, "loopA_end",   win[k].end);
+            run_silence(api, inst, SAMPLE_RATE);
+
+            /* The take is a 10Hz ramp, so the seam is the one jump per lap
+             * far larger than the ramp's own resets. Count laps by it. */
+            int16_t tb[BLOCK_FRAMES * 2];
+            long n = 0, last = -1, cnt = 0; double sum = 0.0;
+            int16_t prev = 0; int have = 0;
+            for (int b = 0; b < 900; b++) {
+                fill_silence(tb, BLOCK_FRAMES);
+                api->process_block(inst, tb, BLOCK_FRAMES);
+                for (int i = 0; i < BLOCK_FRAMES; i++) {
+                    int16_t v = tb[i * 2];
+                    if (have) {
+                        int d = v - prev;
+                        if (d > 12000 || d < -12000) {
+                            if (last >= 0 && n - last > 2000) { sum += (double)(n - last); cnt++; }
+                            if (last < 0 || n - last > 2000) last = n;
+                        }
+                    }
+                    prev = v; have = 1; n++;
+                }
+            }
+            per[k] = cnt ? sum / (double)cnt / (double)SAMPLE_RATE : 0.0;
+            api->destroy_instance(inst);
+        }
+        check(per[0] > 0.0 && per[1] > 0.0, "test43: both windows have a measurable period");
+        check(per[1] > per[0] * 0.75 && per[1] < per[0] * 1.25,
+              "test43: the reversed window is the SAME span as the forward one —\n"
+              "END below START is a window, not the minimum-length collapse it\n"
+              "used to be");
+    }
+
+    /* ---- Test 44: DUST's further reaches.
+     *
+     * Turning DUST left keeps raising the crackle it always did, and brings
+     * in three more surfaces behind it, each over its own fifth of the knob:
+     * a noise burst behind every click (0.20), worn-side distortion (0.40),
+     * and grains of the take thrown back over it (0.60).
+     *
+     * MEASURED AGAINST DUST'S OWN CONTROL AT EACH STEP, not against silence:
+     * the crackle underneath is getting louder the whole way, so "louder
+     * than nothing" would pass with all three surfaces deleted. What each
+     * zone must show is MORE than the zone below it. ---- */
+    {
+        /*
+         * EACH SURFACE IS MEASURED WITH THE ONES AROUND IT HELD STILL.
+         *
+         * The first version compared total energy at four DUST settings and
+         * was worthless: the crackle underneath rises across the whole
+         * travel and the burst is louder than either of the surfaces above
+         * it, so "more energy" was always true and never because of the
+         * thing being named. Deleting the grains entirely left it green.
+         *
+         * Writing loopX_chaos AFTER loopX_dust pins the click stage at a
+         * fixed level while leaving DUST's own position where it is. Two
+         * runs then differ by exactly one surface.
+         */
+        static const char *pin = "0.5";
+        double e_burst[2] = { 0, 0 }, e_grain[2] = { 0, 0 };
+        static const char *burst_at[] = { "-0.19", "-0.39" };   /* off, then full */
+        static const char *grain_at[] = { "-0.59", "-0.95" };   /* off, then most */
+
+        for (int which = 0; which < 2; which++) {
+            const char **at = which ? grain_at : burst_at;
+            for (int k = 0; k < 2; k++) {
+                void *inst = api->create_instance(".", NULL);
+                float phase = 0.0f;
+                record_full_buffer_loop_a(api, inst, &phase);
+                api->set_param(inst, "loopA_decay_rate", "300");
+                api->set_param(inst, "loopA_wow", "0");
+                api->set_param(inst, "loopA_send", "0");
+                api->set_param(inst, "loopA_dust", at[k]);
+                api->set_param(inst, "loopA_chaos", pin);
+                api->set_param(inst, "loopA_hiss", "0");
+                run_silence(api, inst, SAMPLE_RATE);
+
+                int16_t tb[BLOCK_FRAMES * 2];
+                double sum = 0.0;
+                for (int b = 0; b < 600; b++) {
+                    fill_silence(tb, BLOCK_FRAMES);
+                    api->process_block(inst, tb, BLOCK_FRAMES);
+                    for (int i = 0; i < BLOCK_FRAMES; i++) {
+                        double v = tb[i * 2];
+                        sum += v * v;
+                    }
+                }
+                (which ? e_grain : e_burst)[k] = sum;
+                check(sum == sum, "test44: the output is finite at this DUST setting");
+                api->destroy_instance(inst);
+            }
+        }
+        check(e_burst[0] > 0.0 && e_grain[0] > 0.0, "test44: the take plays at every step");
+        check(e_burst[1] > e_burst[0] * 1.10,
+              "test44: past 0.20 the noise burst behind each click adds energy\n"
+              "the click alone did not — measured with the click held at a\n"
+              "fixed level, so it cannot be the crackle rising instead");
+        check(e_grain[1] > e_grain[0] * 1.10,
+              "test44: past 0.60 the grains throw enough of the take back over\n"
+              "it to measure, with the crackle again held still");
+
+        /*
+         * THE DISTORTION, WITH EVERYTHING ELSE SILENT.
+         *
+         * It is not measured by energy — a soft clipper takes peaks DOWN,
+         * that being what clipping is — and not by crest either while the
+         * clicks are audible, because they are added AFTER the shaper and
+         * set the peak themselves. Crest went UP across the threshold.
+         *
+         * So write chaos to zero: no clicks, and therefore no bursts, since
+         * a burst only ever rides a click. What is left between the two
+         * settings is the shaper and nothing else, working on a sine.
+         */
+        {
+            double cr[2] = { 0, 0 };
+            static const char *dirt_at[] = { "-0.39", "-0.55" };
+            for (int k = 0; k < 2; k++) {
+                void *inst = api->create_instance(".", NULL);
+                float phase = 0.0f;
+                api->set_param(inst, "input_routing", TEST_ROUTE_A);
+                press_record(api, inst);
+                run_tone(api, inst, SAMPLE_RATE * 2, 0.4f, 220.0f, &phase);
+                press_record(api, inst);
+                api->set_param(inst, "loopA_decay_rate", "300");
+                api->set_param(inst, "loopA_wow", "0");
+                api->set_param(inst, "loopA_send", "0");
+                api->set_param(inst, "loopA_dust", dirt_at[k]);
+                api->set_param(inst, "loopA_chaos", "0");
+                api->set_param(inst, "loopA_hiss", "0");
+                run_silence(api, inst, SAMPLE_RATE);
+
+                int16_t tb[BLOCK_FRAMES * 2];
+                double sum = 0.0, pk = 0.0; long n = 0;
+                for (int b = 0; b < 400; b++) {
+                    fill_silence(tb, BLOCK_FRAMES);
+                    api->process_block(inst, tb, BLOCK_FRAMES);
+                    for (int i = 0; i < BLOCK_FRAMES; i++) {
+                        double v = tb[i * 2];
+                        sum += v * v; n++;
+                        if (fabs(v) > pk) pk = fabs(v);
+                    }
+                }
+                cr[k] = (sum > 0.0) ? pk / sqrt(sum / (double)n) : 0.0;
+                api->destroy_instance(inst);
+            }
+            check(cr[0] > 1.25 && cr[0] < 1.60,
+                  "test44: below 0.40 the take comes through unshaped — a sine's\n"
+                  "crest factor is about root two, and this reads it");
+            check(cr[1] < cr[0] * 0.96,
+                  "test44: past 0.40 the worn-side distortion folds the peaks in,\n"
+                  "so crest factor falls away from a sine's");
+        }
+
+        /*
+         * AND THE GRAINS MUST ACTUALLY BE GRAINS.
+         *
+         * Every energy check above passes if the grain envelope never decays
+         * — louder, in fact. But a grain that never ends occupies its voice
+         * forever, so after six triggers nothing new is ever thrown and the
+         * texture becomes a drone rather than a scatter. Onsets are what
+         * separate them, and onsets are transients: measure crest, with the
+         * clicks turned down so they are not the transients being counted.
+         */
+        {
+            /* A SINE, and a short one. The threshold below is a measured
+             * number, and it is only meaningful against the material it was
+             * measured on: the same take reads 3.8 with the grains working
+             * and 1.8 with the envelope removed. On the 10Hz ramp used
+             * elsewhere both readings sit above 2 and the check is blind —
+             * which is how it was first written, and it passed. */
+            void *inst = api->create_instance(".", NULL);
+            float phase = 0.0f;
+            api->set_param(inst, "input_routing", TEST_ROUTE_A);
+            press_record(api, inst);
+            run_tone(api, inst, SAMPLE_RATE * 4, 0.37f, 220.0f, &phase);
+            press_record(api, inst);
+            api->set_param(inst, "loopA_decay_rate", "300");
+            api->set_param(inst, "loopA_wow", "0");
+            api->set_param(inst, "loopA_send", "0");
+            api->set_param(inst, "loopA_dust", "-0.95");
+            api->set_param(inst, "loopA_chaos", "0");
+            api->set_param(inst, "loopA_hiss", "0");
+            run_silence(api, inst, SAMPLE_RATE * 3);
+
+            int16_t tb[BLOCK_FRAMES * 2];
+            double sum = 0.0, pk = 0.0; long n = 0;
+            for (int b = 0; b < 600; b++) {
+                fill_silence(tb, BLOCK_FRAMES);
+                api->process_block(inst, tb, BLOCK_FRAMES);
+                for (int i = 0; i < BLOCK_FRAMES; i++) {
+                    double v = tb[i * 2];
+                    sum += v * v; n++;
+                    if (fabs(v) > pk) pk = fabs(v);
+                }
+            }
+            double cr = (sum > 0.0) ? pk / sqrt(sum / (double)n) : 0.0;
+            check(cr > 2.6,
+                  "test44: the grains keep arriving and dying — a scatter of\n"
+                  "onsets, not six voices stuck open playing a drone");
+
+            /* NOT PINNED HERE: that the grain envelope LENGTHENS as the knob
+             * turns. Fixing the tail at its shortest reads within a few
+             * percent of the real thing on every black-box measure tried —
+             * energy, crest and block-energy variance — so any check would be
+             * a threshold tuned to today's constants rather than a statement
+             * about the behaviour. It is a judgement for the ear. */
+            api->destroy_instance(inst);
+        }
+
+        /* AND NONE OF IT BELOW THE FIRST THRESHOLD. DUST at 0.15 must be
+         * bit-identical to the crackle-only path, or "0-20% is unchanged"
+         * is not true and every existing setting has quietly moved. */
+        int16_t a[64 * BLOCK_FRAMES], b2[64 * BLOCK_FRAMES];
+        for (int pass = 0; pass < 2; pass++) {
+            void *inst = api->create_instance(".", NULL);
+            float phase = 0.0f;
+            record_full_buffer_loop_a(api, inst, &phase);
+            api->set_param(inst, "loopA_decay_rate", "300");
+            api->set_param(inst, "loopA_wow", "0");
+            api->set_param(inst, "loopA_send", "0");
+            api->set_param(inst, "loopA_dust", pass == 0 ? "-0.19" : "-0.19");
+            run_silence(api, inst, SAMPLE_RATE);
+            int16_t tb[BLOCK_FRAMES * 2];
+            for (int bl = 0; bl < 64; bl++) {
+                fill_silence(tb, BLOCK_FRAMES);
+                api->process_block(inst, tb, BLOCK_FRAMES);
+                for (int i = 0; i < BLOCK_FRAMES; i++)
+                    (pass == 0 ? a : b2)[bl * BLOCK_FRAMES + i] = tb[i * 2];
+            }
+            api->destroy_instance(inst);
+        }
+        check(memcmp(a, b2, sizeof(a)) == 0,
+              "test44: below the first threshold the module is deterministic —\n"
+              "the control this comparison depends on is sound");
     }
 
     /* The PASS line used to print unconditionally and the runner grepped

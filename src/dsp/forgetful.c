@@ -63,16 +63,30 @@
  * NOT on a page — DUST writes both. They stay declared so they remain LFO
  * and CC targets.
  *
- * The Master page's "status overview" turned out not to be expressible as
- * text paired with each volume knob's cell: a chain_params entry only ever
- * annotates its OWN knob, never a neighbor's, and the knob-grid's value
- * cell (~30px at the 4x5 font — CELL_W/LABEL_CHARS in render_page_movy.mjs)
- * has room for roughly 6-8 characters, nowhere near a 23-character
+ * The Master page's "status overview" was not expressible as text paired
+ * with each volume knob's cell: a chain_params entry only ever annotates
+ * its OWN knob, never a neighbor's, and the knob-grid's value cell (~30px
+ * at the 4x5 font — CELL_W/LABEL_CHARS in render_page_movy.mjs) has room
+ * for roughly 6-8 characters, nowhere near a 23-character
  * "A:74% B:Rec C:-- D:12%" string. `master_loops_overview` ("Status" on the
  * Master page, access "read") is the fit-the-budget replacement: one glyph
  * per loop in A/B/C/D order, no separators — '-' idle/forgotten, 'R'
  * recording, else a memory decile digit (e.g. "7R-1"). Declared as an enum,
  * not a string — see the chain_params comment at its declaration below.
+ *
+ * Schwung 1.2 lifted the constraint that forced all of that. A module may
+ * now draw its own art inside a knob cell, so the cell shows four TANKS —
+ * one per loop, filled by memory, with this loop's own status character
+ * inside it, drawn as a negative so it stays legible as the fill rises
+ * through it (src/canvas.js, "custom:fg"). Level and state are two
+ * channels that do not compete: the fill is how much is left, the glyph is
+ * what the loop is doing. The string above is unchanged and still the
+ * read: the drawer parses it, an older host renders it as characters, and
+ * tests 7 and 8 still pin it byte for byte. Only the drawing is new.
+ *
+ * The 9-down-to-1-never-0 rule still holds and still matters: the widget
+ * draws its own 3x5 glyphs, where '0' and 'O' would be as confusable as
+ * they are in the device font. It is not a workaround the picture retired.
  */
 
 #include <stdio.h>
@@ -304,6 +318,57 @@ static const char *ROUTE_LABELS[NUM_LOOPS] = { "A", "B", "C", "D" };
 #define CRACKLE_DUST_GAIN     0.015f   /* was 0.05 -> 0.03 -> this (2026-08-25: "way too loud" — halved again) */
 #define CRACKLE_POP_GAIN      0.075f   /* was 0.35 -> 0.15 -> this (2026-08-25: "way too loud" — halved again) */
 #define CRACKLE_BASELINE_DENSITY_FRAC 0.35f /* density_factor held here across applied_crackle in [0, 0.5] */
+
+/* ---- DUST's further reaches -------------------------------------------
+ *
+ * Turning DUST left keeps doing what it always did — the crackle above gets
+ * louder and busier across the WHOLE travel — and brings in three more
+ * surfaces behind it, each fading in over its own fifth of the knob:
+ *
+ *      0.20 -> 0.40   every click gains a soft noise burst, and the burst
+ *                     lengthens as you turn
+ *      0.40 -> 0.60   the playback distorts the way a worn side does
+ *      0.60 -> 1.00   grains of the loop itself are thrown back over it
+ *
+ * ALL THREE SIT AFTER THE WRITE-BACK, beside the crackle and for the same
+ * reason: they are the surface of THIS playback, not damage to the medium.
+ * Putting the distortion inside the recursion was the tempting version and
+ * is how you get a loop that squares itself every pass.
+ */
+#define DUST_BURST_FROM       0.20f
+#define DUST_DIRT_FROM        0.40f
+#define DUST_GRAIN_FROM       0.60f
+
+/* The noise burst behind each click. Tau, not a per-sample coefficient, so
+ * the two ends read as times rather than as magic numbers. */
+#define BURST_TAU_MIN_S       0.004f   /* a tick with a little air behind it */
+#define BURST_TAU_MAX_S       0.110f   /* a soft "shhk" — longer starts to wash */
+/* Halved: at 0.020 the bursts overlapped into a wash that dominated
+ * everything above them, and the two surfaces above could not be heard past
+ * it. It is the air behind a click, not a texture of its own. */
+#define BURST_GAIN            0.015f
+
+/* Grains. Four voices is enough to overlap without turning into a drone,
+ * and it bounds the work: this runs per sample on the audio thread. */
+#define GRAIN_VOICES          6
+#define GRAIN_TAU_MIN_S       0.012f
+#define GRAIN_TAU_MAX_S       0.150f
+#define GRAIN_TRIG_PROB       0.0045f  /* per sample, at full DUST */
+/* Loud enough to BE a surface. At 0.55 the grains moved the output by two
+ * parts in a thousand — measurable only by a test that was really measuring
+ * the crackle underneath them, and inaudible next to the burst. */
+#define GRAIN_GAIN            1.15f
+
+/* Worn-vinyl dirt: soft clip with a little second harmonic, so it thickens
+ * asymmetrically rather than just squaring off. */
+/* Drive has to be this high to be heard at all. The loop arrives well below
+ * full scale — the regulator holds it there — and tanh is very nearly a
+ * straight line for small x, so a drive of 3 measured as a 3% change and was
+ * inaudible: a distortion that does not distort. At 12 the peaks actually
+ * fold, which costs some level on the way (a clipper takes peaks DOWN; that
+ * is what it is for) and the limiter downstream is untroubled by it. */
+#define DIRT_MAX_DRIVE        12.0f
+#define DIRT_ASYMMETRY        0.18f
 #define CRACKLE_MAX_DENSITY_FRAC      0.5f  /* density_factor reached at applied_crackle=1 */
 
 /* Darken's reverb wash (replaced the plain LP filter 2026-08-25 — "still not
@@ -400,6 +465,18 @@ static const speed_option_t SPEED_OPTIONS[] = {
 
 #define FREQ_SEMITONE_RANGE  12.0f
 #define FREQ_GLIDE_SECONDS    0.05f
+
+/* How long a memory takes to come back up when Age is turned UP.
+ *
+ * Long enough not to click and short enough to feel like the knob did it:
+ * the gesture and the sound have to belong to each other. A quarter second
+ * still ticked on a nearly-dead loop, where the lift spans almost the whole
+ * range; two seconds felt like an effect rather than a control. */
+#define MEMORY_LIFT_SECONDS   0.90f
+
+/* How long the head takes to turn round when END crosses START. Passes
+ * through zero on the way, so the tape slows, stops and runs back. */
+#define WINDOW_FLIP_SECONDS   0.35f
 
 /* ---- Trim: one knob, both ends ---------------------------------------
  * Centre plays the whole take. Left walks the loop's START forward, right
@@ -826,6 +903,19 @@ typedef struct {
 
     /* degradation */
     float memory;
+    /* Where memory is being LIFTED to, or 0 when nothing is lifting.
+     *
+     * Turning Age UP means "this loop now has that long to live", which is a
+     * reset of memory to full. Writing 1.0f straight into `memory` is the
+     * obvious way and is audibly wrong: memory scales the loop's output level
+     * and the age that drives hiss and the gate, so a knob detent would step
+     * the level up in one sample — a click, and a loud one from a nearly-dead
+     * loop. The lift is glided instead, over MEMORY_LIFT_SECONDS.
+     *
+     * A TARGET, not a flag, because the glide has to survive everything that
+     * happens while it runs: further turns of the knob, decay continuing
+     * underneath it, and a freeze. */
+    float memory_lift;
     int   medium_last_idx;   /* write-back cursor, see the LOOPING case */
     float medium_level, medium_gain;   /* the level regulator */
     float record_abs_sum;              /* running x^2 while RECORDING, so the
@@ -845,6 +935,15 @@ typedef struct {
     int   warp_drift_countdown;
     float hiss_lp_l, hiss_lp_r;  /* hiss-coloring filter state, see HISS_COLOR_COEFF */
     float crackle_env;  /* VINYL click/pop envelope, see CRACKLE_DUST_MAX_PROB */
+    /* DUST's further reaches — see DUST_BURST_FROM. */
+    float burst_env;    /* noise burst riding behind each click */
+    float burst_dec;    /* its per-sample decay, set from the knob */
+    struct {
+        double pos;     /* read position in the take, in frames */
+        float  env;     /* exponential envelope, 0 = voice free */
+        float  dec;
+        float  rate;    /* 0.5 / 1 / 2 — octaves only, so it stays in tune */
+    } grains[GRAIN_VOICES];
     /* Speed glides rather than jumping — a tape machine takes a moment to
      * settle at a new rate, and a hard cut to half speed is a click and a
      * lurch. Interpolated in LOG2 space, so the glide is a constant number
@@ -865,6 +964,17 @@ typedef struct {
      * The two underlying params still exist and still work; this writes
      * BOTH of them. */
     float dust;                     /* -1 = full VINYL, +1 = full Hiss */
+    /* How far DUST is turned LEFT, and the slewed value the further
+     * surfaces actually read.
+     *
+     * NOT applied_crackle, which is what they were keyed off first. That
+     * variable is also `loopX_chaos` — VINYL's own parameter, and an LFO and
+     * CC target — so driving grains and distortion from it silently changed
+     * what VINYL means for anyone already using it, and broke the premise of
+     * the freeze test: a frozen take stopped being altered LESS, because most
+     * of the alteration had become playback effects freeze does not stop.
+     * DUST's further reaches are DUST's. */
+    float dust_left, applied_dust_left;
     double trim_lo, trim_hi;        /* per block, in frames */
     float tone;                     /* -1 .. +1, 0 = bypass */
     float tone_a;                   /* per-block coefficient */
@@ -892,6 +1002,10 @@ typedef struct {
      * 1x -> -1x is the case that proves it: the magnitude never changes, so
      * without this the whole gesture would be a discontinuity. */
     float speed_dir_cur, speed_dir_target, speed_dir_step;
+    /* +1 or -1 for the WINDOW's own direction — which way round START and END
+     * are. Kept apart from speed_dir_* because that one is read back to name
+     * the selected speed option; see the trim block. */
+    float window_dir_cur, window_dir_target, window_dir_step;
     float speed_eff;   /* exp2(speed_log_cur), what the read head uses */
     float speed_mul;   /* 0.25 / 0.5 / 1 / 2: the SELECTED rate, so the loop shifts
                         * by octaves and its pass takes proportionally
@@ -1069,6 +1183,33 @@ static uint32_t rng_next(uint32_t *seed) {
 }
 
 /* uniform float in [-1, 1] */
+/* How far into a zone [from, to) a value has travelled, 0 below and 1 above.
+ * Every one of DUST's further surfaces fades in through one of these, so
+ * none of them can appear at a detent. */
+static float zone_amount(float v, float from, float to) {
+    if (v <= from) return 0.0f;
+    if (v >= to) return 1.0f;
+    return (v - from) / (to - from);
+}
+
+/* Worn vinyl: soft clip with a little second harmonic, so it thickens
+ * asymmetrically instead of merely squaring off. Unity at drive 0, so the
+ * stage is transparent until DUST reaches it. */
+static float dirt_shape(float x, float drive, float amt) {
+    if (amt <= 0.0f) return x;
+    float d = 1.0f + drive * amt;
+    /* PARTIAL makeup, not full and not none.
+     *
+     * Dividing by d is level-preserving for a signal that never clips and
+     * costs about 6dB for one that does — which made DUST behave like a
+     * volume control on the way up. Dividing by tanh(d) instead restores
+     * full scale but multiplies a quiet loop by four, which is worse.
+     * d^0.7 lands between them: the peaks still fold, and the loop stays
+     * roughly where it was. */
+    float y = tanhf(x * d + DIRT_ASYMMETRY * amt * x * x) / powf(d, 0.7f);
+    return x + (y - x) * amt;
+}
+
 static float rng_bipolar(uint32_t *seed) {
     return ((float)(rng_next(seed) & 0xFFFFFF) / (float)0xFFFFFF) * 2.0f - 1.0f;
 }
@@ -1184,6 +1325,7 @@ static void close_recording(loop_engine_t *loop) {
     float take_level = loop->record_abs_sum / (float)loop->recorded_length;
     loop->read_head = 0.0;
     loop->memory = 1.0f;
+    loop->memory_lift = 0.0f;
     loop->medium_last_idx = -1;
     loop->medium_level = 0.0f;
     loop->record_abs_sum = 0.0f;
@@ -1202,6 +1344,14 @@ static void close_recording(loop_engine_t *loop) {
     loop->warp_drift_countdown = 0;
     loop->hiss_lp_l = loop->hiss_lp_r = 0.0f;
     loop->crackle_env = 0.0f;
+    loop->burst_env = 0.0f;
+    loop->burst_dec = 0.0f;
+    for (int gi = 0; gi < GRAIN_VOICES; gi++) {
+        loop->grains[gi].env = 0.0f;
+        loop->grains[gi].pos = 0.0;
+        loop->grains[gi].dec = 0.0f;
+        loop->grains[gi].rate = 1.0f;
+    }
     loop->frozen = 0;
     loop->overdubbing = 0;
     loop->overdub_gain = 0.0f;
@@ -1403,12 +1553,16 @@ static void init_loop(loop_engine_t *loop, uint32_t rng_seed) {
     loop->speed_mul = 1.0f;
     loop->speed_dir_cur = loop->speed_dir_target = 1.0f;
     loop->speed_dir_step = 0.0f;
+    loop->window_dir_cur = loop->window_dir_target = 1.0f;
+    loop->window_dir_step = 0.0f;
     loop->freq_semis = 0.0f;
     loop->freq_log_cur = loop->freq_log_target = loop->freq_log_step = 0.0f;
     loop->speed_eff = 1.0f;   /* log_cur/target are 0 from the memset = 1x */
     loop->start_frac = START_DEFAULT_FRAC;
     loop->end_frac   = END_DEFAULT_FRAC;
     loop->dust       = 0.0f;
+    loop->dust_left  = 0.0f;
+    loop->applied_dust_left = 0.0f;
     /* Age starts FULL (300s, the max — was 180s/3min); Warp/Darken/Hiss/
      * VINYL start at minimum, UNTOUCHED (flavor_ramp_t's zeroed target/step/
      * touched from the memset above is exactly that — nothing to set here).
@@ -1529,20 +1683,55 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
 
         {
             double len = (double)loop->recorded_length;
-            double lo = len * (double)clampf(loop->start_frac, 0.0f, 1.0f);
-            double hi = len * (double)clampf(loop->end_frac,   0.0f, 1.0f);
-            /* Ordering and the minimum span are enforced HERE, not in
+            double a = len * (double)clampf(loop->start_frac, 0.0f, 1.0f);
+            double b = len * (double)clampf(loop->end_frac,   0.0f, 1.0f);
+
+            /* THE WINDOW IS BETWEEN THE TWO KNOBS, WHICHEVER WAY ROUND THEY
+             * ARE, AND ITS ORDER IS ITS DIRECTION.
+             *
+             * END pulled below START used to collapse to a minimum-length
+             * loop sitting at START. That kept the two knobs from ever
+             * trading meaning, at the price of a whole half of their travel
+             * doing nothing but shorten. It now plays that section BACKWARDS
+             * instead: the span is |END - START| either way, and which of
+             * them is on the left decides the direction of travel.
+             *
+             * The knobs still never swap: START is always where the window
+             * starts FROM in time, END where it stops. Reversed, that simply
+             * means the head runs from END back to START.
+             *
+             * Ordering and the minimum span are enforced HERE, not in
              * set_param, so both knobs stay free to turn anywhere. Clamping
-             * the stored value instead makes a knob snap back under the
-             * hand, which reads as a broken control rather than as a limit.
-             * END below START collapses to a minimum-length loop at START
-             * rather than swapping them, so the two knobs never trade
-             * meaning mid-turn. */
+             * the stored value instead makes a knob snap back under the hand,
+             * which reads as a broken control rather than as a limit. */
+            double lo = a < b ? a : b;
+            double hi = a < b ? b : a;
+            float wdir = (b < a) ? -1.0f : 1.0f;
+
             if (hi - lo < (double)MIN_RECORDED_FRAMES) hi = lo + (double)MIN_RECORDED_FRAMES;
             if (hi > len) { hi = len; lo = hi - (double)MIN_RECORDED_FRAMES; }
             if (lo < 0.0) lo = 0.0;
             loop->trim_lo = lo;
             loop->trim_hi = hi;
+
+            /* A SEPARATE GLIDE FROM THE SPEED KNOB'S, and separate for a
+             * reason that is not cosmetic: get_param("speed") identifies the
+             * selected option by the SIGN of speed_dir_target, so folding the
+             * window's direction into it would make the module report a
+             * reverse speed that nobody selected — and the host learns an
+             * enum's wire format from exactly that read.
+             *
+             * Glides rather than flips, and through zero like the speed
+             * knob's, so crossing END past START slows, stops and runs back
+             * the way a tape would instead of clicking. Much shorter than
+             * SPEED_GLIDE_SECONDS, though: this one is a direct consequence of
+             * the knob under your hand, and five seconds of lag would read as
+             * the control being broken. */
+            if (wdir != loop->window_dir_target) {
+                loop->window_dir_target = wdir;
+                loop->window_dir_step = fabsf(wdir - loop->window_dir_cur) /
+                                        (WINDOW_FLIP_SECONDS * SAMPLE_RATE);
+            }
         }
 
         loop->warp_amt = flavour_reach(loop->applied_wow, age);
@@ -1592,6 +1781,12 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 moved = 1;
             }
             if (moved) loop->speed_eff = exp2f(loop->speed_log_cur + loop->freq_log_cur);
+            if (loop->window_dir_cur != loop->window_dir_target) {
+                float move = loop->window_dir_step * (float)frames;
+                float diff = loop->window_dir_target - loop->window_dir_cur;
+                if (fabsf(diff) <= move || move <= 0.0f) loop->window_dir_cur = loop->window_dir_target;
+                else loop->window_dir_cur += (diff > 0.0f) ? move : -move;
+            }
             if (loop->speed_dir_cur != loop->speed_dir_target) {
                 float move = loop->speed_dir_step * (float)frames;
                 float diff = loop->speed_dir_target - loop->speed_dir_cur;
@@ -1692,6 +1887,10 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 double speed = 1.0 + mod;
                 speed *= (double)loop->speed_eff;
                 speed *= (double)loop->speed_dir_cur;
+                /* The window's own direction, on top of the knob's. A
+                 * reversed window running at -1x is forward again, which is
+                 * what two reversals mean and what the head should do. */
+                speed *= (double)loop->window_dir_cur;
 
                 loop->wow_phase += 2.0f * PI_F * WOW_RATE_HZ / SAMPLE_RATE;
                 if (loop->wow_phase >= 2.0f * PI_F) loop->wow_phase -= 2.0f * PI_F;
@@ -1908,12 +2107,65 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * trade as the hiss above. The decay still runs, so a tail
                  * already ringing dies out as it always did rather than
                  * being cut off. */
+                /* How far into each of the three further surfaces the knob
+                 * has been turned. Each is 0 until its own threshold, so
+                 * nothing below 20% behaves any differently than it did. */
+                float dl = loop->applied_dust_left;
+                float burst_amt = zone_amount(dl, DUST_BURST_FROM, DUST_DIRT_FROM);
+                float dirt_amt  = zone_amount(dl, DUST_DIRT_FROM,  DUST_GRAIN_FROM);
+                float grain_amt = zone_amount(dl, DUST_GRAIN_FROM, 1.0f);
+
+                loop->burst_env *= loop->burst_dec;
                 if (crackle_volume > 0.0f) {
+                    int clicked = 0;
                     if (rng_range(&loop->noise_rng, 0.0f, 1.0f) < crackle_density * CRACKLE_DUST_MAX_PROB) {
                         loop->crackle_env += rng_bipolar(&loop->noise_rng) * CRACKLE_DUST_GAIN;
+                        clicked = 1;
                     }
                     if (rng_range(&loop->noise_rng, 0.0f, 1.0f) < crackle_density * CRACKLE_POP_MAX_PROB) {
                         loop->crackle_env += rng_bipolar(&loop->noise_rng) * CRACKLE_POP_GAIN;
+                        clicked = 1;
+                    }
+                    /* The burst belongs to the CLICK, not to a roll of its
+                     * own: it is the sound of the stylus in the groove that
+                     * made the tick, so it has to arrive with one. */
+                    if (clicked && burst_amt > 0.0f) {
+                        float tau = BURST_TAU_MIN_S +
+                                    burst_amt * (BURST_TAU_MAX_S - BURST_TAU_MIN_S);
+                        loop->burst_dec = expf(-1.0f / (tau * SAMPLE_RATE));
+                        loop->burst_env += burst_amt * BURST_GAIN;
+                    }
+                }
+
+                /* Grains: short pieces of this take, thrown back over it. */
+                if (grain_amt > 0.0f && loop->recorded_length > 0) {
+                    if (rng_range(&loop->noise_rng, 0.0f, 1.0f) < grain_amt * GRAIN_TRIG_PROB) {
+                        for (int g = 0; g < GRAIN_VOICES; g++) {
+                            if (loop->grains[g].env > 0.0001f) continue;
+                            /* SIMPLE FRACTIONS OF THE WINDOW, not a free
+                             * random position: a grain landing on a half or a
+                             * third of the loop lines up with whatever is
+                             * already playing, which is what keeps this a
+                             * rhythm rather than a shuffle. */
+                            static const float fr[] = { 0.0f, 0.25f, 0.5f, 0.75f,
+                                                        1.0f/3.0f, 2.0f/3.0f };
+                            int fi = (int)(rng_range(&loop->noise_rng, 0.0f, 6.0f));
+                            if (fi > 5) fi = 5;
+                            double span = loop->trim_hi - loop->trim_lo;
+                            double at = loop->trim_lo + span * (double)fr[fi];
+                            if (at < 0.0) at = 0.0;
+                            if (at >= (double)loop->recorded_length) at = 0.0;
+                            /* Octaves only. Any other ratio detunes against
+                             * the loop it is being thrown over. */
+                            float r = rng_range(&loop->noise_rng, 0.0f, 3.0f);
+                            loop->grains[g].rate = (r < 1.0f) ? 0.5f : ((r < 2.0f) ? 1.0f : 2.0f);
+                            float tau = GRAIN_TAU_MIN_S +
+                                        grain_amt * (GRAIN_TAU_MAX_S - GRAIN_TAU_MIN_S);
+                            loop->grains[g].dec = expf(-1.0f / (tau * SAMPLE_RATE));
+                            loop->grains[g].pos = at;
+                            loop->grains[g].env = 1.0f;
+                            break;
+                        }
                     }
                 }
                 /* ---- the medium ------------------------------------
@@ -2017,8 +2269,41 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                  * to the medium, so it does not accumulate either. */
                 float out_l = med_l, out_r = med_r;
 
+                /* Worn-side distortion, on the PLAYBACK only — see the
+                 * DUST constants for why it is not inside the recursion. */
+                out_l = dirt_shape(out_l, DIRT_MAX_DRIVE, dirt_amt);
+                out_r = dirt_shape(out_r, DIRT_MAX_DRIVE, dirt_amt);
+
                 float crackle_l = out_l + loop->crackle_env * crackle_volume;
                 float crackle_r = out_r + loop->crackle_env * crackle_volume;
+
+                /* The burst behind the click. Mono with the click it belongs
+                 * to — one point in the groove, not a stereo field. */
+                if (loop->burst_env > 0.0001f) {
+                    float nz = rng_bipolar(&loop->noise_rng) * loop->burst_env * crackle_volume;
+                    crackle_l += nz;
+                    crackle_r += nz;
+                }
+
+                /* Grains, read straight off the take and enveloped. */
+                for (int g = 0; g < GRAIN_VOICES; g++) {
+                    if (loop->grains[g].env <= 0.0001f) { loop->grains[g].env = 0.0f; continue; }
+                    double gp = loop->grains[g].pos;
+                    int gi = (int)gp;
+                    if (gi < 0 || gi >= loop->recorded_length) { loop->grains[g].env = 0.0f; continue; }
+                    int gj = gi + 1; if (gj >= loop->recorded_length) gj = 0;
+                    float gf = (float)(gp - (double)gi);
+                    float gl = ((float)loop->buffer[gi].l * (1.0f - gf) +
+                                (float)loop->buffer[gj].l * gf) / 32768.0f;
+                    float gr = ((float)loop->buffer[gi].r * (1.0f - gf) +
+                                (float)loop->buffer[gj].r * gf) / 32768.0f;
+                    float e = loop->grains[g].env * grain_amt * GRAIN_GAIN;
+                    crackle_l += gl * e;
+                    crackle_r += gr * e;
+                    loop->grains[g].pos += (double)loop->grains[g].rate;
+                    if (loop->grains[g].pos >= (double)loop->recorded_length) loop->grains[g].pos = 0.0;
+                    loop->grains[g].env *= loop->grains[g].dec;
+                }
 
                 /* 5. Level scaling — this loop's own contribution fades with
                  * memory, and independently with erase_fade_gain (1.0
@@ -2105,14 +2390,29 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                     if (!loop->frozen) {
                         float step = 1.0f / (loop->decay_rate * SAMPLE_RATE);
                         loop->memory -= step;
-                    } else {
+                        /* The lift, running AGAINST the decay rather than
+                         * instead of it. Net rise, because the lift spans the
+                         * whole range in under a second and the fastest decay
+                         * takes three — so the loop is still always trying to
+                         * die, even on the way back up. */
+                        if (loop->memory_lift > 0.0f) {
+                            loop->memory += 1.0f / (MEMORY_LIFT_SECONDS * SAMPLE_RATE);
+                            if (loop->memory >= loop->memory_lift) {
+                                loop->memory = loop->memory_lift;
+                                loop->memory_lift = 0.0f;   /* arrived */
+                            }
+                        }
                     }
                     loop->applied_wow     += FLAVOUR_SLEW_A * (loop->wow_ramp.target     - loop->applied_wow);
                     loop->applied_hiss    += FLAVOUR_SLEW_A * (loop->hiss_ramp.target    - loop->applied_hiss);
                     loop->applied_crackle += FLAVOUR_SLEW_A * (loop->crackle_ramp.target - loop->applied_crackle);
+                    /* Same one-pole as the flavours it sits beside, so a
+                     * detent cannot step a surface into existence. */
+                    loop->applied_dust_left += FLAVOUR_SLEW_A * (loop->dust_left - loop->applied_dust_left);
                 }
                 if (loop->memory <= 0.0f) {
                     loop->memory = 0.0f;
+                    loop->memory_lift = 0.0f;
                     loop->state = LOOP_FORGOTTEN;
                     /* The take is gone, so the damage that was being done to
                      * it goes with it: the flavour knobs return to zero and
@@ -2138,11 +2438,15 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                     loop->start_frac = START_DEFAULT_FRAC;
                     loop->end_frac   = END_DEFAULT_FRAC;
                     loop->dust       = 0.0f;
+    loop->dust_left  = 0.0f;
+    loop->applied_dust_left = 0.0f;
                     loop->tone       = 0.0f;
                     loop->decay_rate = MAX_DECAY_RATE;      /* Age back to 100% */
                     loop->speed_mul  = 1.0f;
                     loop->speed_dir_cur = loop->speed_dir_target = 1.0f;
                     loop->speed_dir_step = 0.0f;
+                    loop->window_dir_cur = loop->window_dir_target = 1.0f;
+                    loop->window_dir_step = 0.0f;
                     loop->speed_log_cur = loop->speed_log_target = 0.0f;
                     loop->freq_semis = 0.0f;
                     loop->freq_log_cur = loop->freq_log_target = 0.0f;
@@ -2170,6 +2474,7 @@ static void v2_process_block(void *instance, int16_t *lr, int frames) {
                 loop->state = LOOP_IDLE;
                 reset_take(loop);
                 loop->memory = 0.0f;
+                loop->memory_lift = 0.0f;
                 break;
             }
             }
@@ -2339,7 +2644,32 @@ static const char *loop_key_suffix(const char *key, int *loop_index_out) {
 
 static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *val) {
     if (strcmp(suffix, "decay_rate") == 0) {
+        float was = loop->decay_rate;
         loop->decay_rate = clampf((float)atof(val), MIN_DECAY_RATE, MAX_DECAY_RATE);
+        /*
+         * AGE TURNED UP EXTENDS THE LIFE. Turned down it is a rate and
+         * nothing else, exactly as it always was.
+         *
+         * The rule is "Age is how long this memory has left FROM NOW", so a
+         * turn to the right restarts the clock at the new value — which is a
+         * lift of memory back to full. The tape damage is untouched: it lives
+         * in the buffer, was written there pass by pass and is not stored in
+         * `memory` at all. So the loop comes back up in level and loses the
+         * age-scaled hiss and gate erosion while still SOUNDING as ruined as
+         * it has become. That asymmetry is the whole feature: you can keep
+         * buying a worn take more time, and it keeps wearing.
+         *
+         * ONLY ON AN INCREASE, and only while it is actually playing. Lifting
+         * on any write would make a preset load or a passing LFO refill a
+         * loop that nobody touched.
+         *
+         * NOT WHILE FROZEN: freeze means nothing changes. The target is still
+         * armed, so the lift runs when it thaws — the gesture is not lost,
+         * only held, which is what freeze does to everything else here.
+         */
+        if (loop->state == LOOP_LOOPING && loop->decay_rate > was) {
+            loop->memory_lift = 1.0f;
+        }
     } else if (strcmp(suffix, "wow") == 0) {
         flavor_ramp_set_param(&loop->wow_ramp, &loop->applied_wow, (float)atof(val), loop->memory, loop->decay_rate, loop->frozen);
     } else if (strcmp(suffix, "freq") == 0) {
@@ -2379,6 +2709,7 @@ static void loop_set_param(loop_engine_t *loop, const char *suffix, const char *
          * control exists. */
         float x = clampf((float)atof(val), -1.0f, 1.0f);
         loop->dust = x;
+        loop->dust_left = (x < 0.0f) ? -x : 0.0f;
         float t     = fabsf(x);
         float lead  = t;
         float trail = (t > 0.5f) ? (t - 0.5f) : 0.0f;
@@ -2747,14 +3078,16 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
         }
         pos += snprintf(json + pos, sizeof(json) - pos,
             "{\"key\":\"input_routing\",\"name\":\"Send\",\"type\":\"enum\","
-              "\"options\":[\"A\",\"B\",\"C\",\"D\"],\"default\":0}");
+              "\"options\":[\"A\",\"B\",\"C\",\"D\"],\"default\":0,"
+              "\"viz\":{\"kind\":\"custom:fg\"}}");
         for (int i = 0; i < NUM_LOOPS; i++) {
             pos += snprintf(json + pos, sizeof(json) - pos,
                 ",{\"key\":\"loop%c_volume\",\"name\":\"%c\",\"type\":\"float\","
                   "\"min\":0,\"max\":%.1f,\"default\":%.2f,\"step\":0.01,\"unit\":\"%%\","
                   "\"display_format\":\"%%.0f\"}"
                 ",{\"key\":\"loop%c_speed\",\"name\":\"%c\",\"type\":\"enum\","
-                  "\"options\":[%s],\"default\":\"%s\"}"
+                  "\"options\":[%s],\"default\":\"%s\","
+                  "\"viz\":{\"kind\":\"custom:fg\"}}"
                 ",{\"key\":\"loop%c_tone\",\"name\":\"%c\",\"type\":\"float\","
                   "\"min\":-1,\"max\":1,\"default\":0,\"step\":0.01,\"unit\":\"%%\","
                   "\"display_format\":\"%%.0f\"}",
@@ -2774,7 +3107,8 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
          * regardless of state. */
         pos += snprintf(json + pos, sizeof(json) - pos,
             ",{\"key\":\"master_loops_overview\",\"name\":\"ECHO\",\"type\":\"enum\","
-              "\"options\":[\"-\"],\"access\":\"read\"}");
+              "\"options\":[\"-\"],\"access\":\"read\","
+              "\"viz\":{\"kind\":\"custom:fg\"}}");
         /* Manual record start/stop — replaces the old level-detection
          * auto-trigger entirely (see the set_param comment). Same trigger
          * convention as loopX_erase: any write that isn't the idle spelling
@@ -2816,12 +3150,16 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                  * what once put "Trim, 5000%" on the device. */
                 ",{\"key\":\"loop%c_start\",\"name\":\"START\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01,\"unit\":\"%%\","
-                  "\"display_format\":\"%%.0f\"}"
+                  "\"display_format\":\"%%.0f\","
+                  "\"viz\":{\"kind\":\"custom:fg\",\"group\":\"w\",\"role\":\"a\"}}"
                 ",{\"key\":\"loop%c_end\",\"name\":\"END\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":1,\"step\":0.01,\"unit\":\"%%\","
-                  "\"display_format\":\"%%.0f\"}"
+                  "\"display_format\":\"%%.0f\","
+                  "\"viz\":{\"group\":\"w\",\"role\":\"b\"}}"
 ",{\"key\":\"loop%c_decay_rate\",\"name\":\"Age\",\"type\":\"float\","
-                  "\"min\":3,\"max\":300,\"default\":300,\"step\":1,\"unit\":\"s\"}"
+                  "\"min\":3,\"max\":300,\"default\":300,\"step\":1,\"unit\":\"s\","
+                  "\"card_script\":\"cards.js#fg_age\","
+                  "\"card_w\":58,\"card_h\":24}"
                 ",{\"key\":\"loop%c_send\",\"name\":\"Space\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01,\"unit\":\"%%\","
                   "\"display_format\":\"%%.0f\"}"
@@ -2836,7 +3174,8 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                  * in render_page_movy.mjs ruled "Memory" out), same poetic
                  * pass as Master's own master_loops_overview. */
                 ",{\"key\":\"loop%c_state\",\"name\":\"ECHO\",\"type\":\"enum\","
-                  "\"options\":[\"-\"],\"access\":\"read\"}"
+                  "\"options\":[\"-\"],\"access\":\"read\","
+                  "\"viz\":{\"kind\":\"custom:fg\"}}"
                 ",{\"key\":\"loop%c_wow\",\"name\":\"Warp\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}"
                 /* FREQ is semitones, NOT a fraction — no "%" unit here,
@@ -2845,7 +3184,8 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                  * the last of the tuning. */
                 ",{\"key\":\"loop%c_freq\",\"name\":\"FREQ\",\"type\":\"float\","
                   "\"min\":%.0f,\"max\":%.0f,\"default\":0,\"step\":0.1,"
-                  "\"unit\":\"st\",\"display_format\":\"%%.1f\"}"
+                  "\"unit\":\"st\",\"display_format\":\"%%.1f\","
+                  "\"card_script\":\"cards.js#fg_freq\"}"
                 ",{\"key\":\"loop%c_chaos\",\"name\":\"VINYL\",\"type\":\"float\","
                   "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01}"
                 ",{\"key\":\"loop%c_hiss\",\"name\":\"Hiss\",\"type\":\"float\","
@@ -2895,7 +3235,7 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
                 "%s\"%s\"", i ? "," : "", GLITCH_KIND_LABELS[i]);
         }
         pos += snprintf(json + pos, sizeof(json) - pos,
-            "],\"default\":\"%s\"}"
+            "],\"default\":\"%s\",\"viz\":{\"kind\":\"custom:fg\"}}"
             ",{\"key\":\"glitch_reach\",\"name\":\"Reach\",\"type\":\"float\","
               "\"min\":0,\"max\":1,\"default\":0,\"step\":0.01,\"unit\":\"%%\","
               "\"display_format\":\"%%.0f\"}"

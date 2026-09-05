@@ -34,6 +34,18 @@ cp src/module.json dist/forgetful/module.json
 # discovers it by scanning modules/<category>/<id>/ at runtime — no
 # module.json entry — so it only has to land in the tarball.
 cp src/help.json dist/forgetful/help.json
+# The module's own drawing code (Schwung 1.2). canvas.js is loaded by the
+# shadow UI when the component's chain_params declare a "custom:" viz kind
+# and registers the in-grid widget; cards.js is loaded on the first touch
+# of a knob declaring card_script. Both are discovered by path inside the
+# module directory — canvas.js by name, cards.js by the card_script value
+# — so, like help.json, they only have to land in the tarball.
+#
+# A missing file here is SILENT: the host logs it and draws the built-in
+# widget, which is also what an older Schwung and a one-strike disable
+# look like. Nothing on screen would tell you the copy was forgotten.
+cp src/canvas.js dist/forgetful/canvas.js
+cp src/cards.js  dist/forgetful/cards.js
 
 cd dist
 tar -czvf forgetful-module.tar.gz forgetful/
